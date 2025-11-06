@@ -1,8 +1,207 @@
+"""
+FIITMeteo Server - Binary UDP Protocol
+Course Assignment: PKS-B
+"""
+
 import asyncio
 import time
-import protocol  # Binary protocol module
+import struct
+import zlib
+
+# ============================================================================
+# BINARY PROTOCOL MODULE (Embedded)
+# ============================================================================
+
+# Message types
+MSG_REGISTER = 0
+MSG_REGISTER_ACK = 1
+MSG_DATA = 2
+MSG_DATA_ACK = 3
+MSG_ERROR = 4
+MSG_PING = 5
+MSG_PONG = 6
+
+# Device types
+DEV_THERMONODE = 0
+DEV_WINDSENSE = 1
+DEV_RAINDETECT = 2
+DEV_AIRQUALITYBOX = 3
+
+DEVICE_TYPE_MAP = {
+    "ThermoNode": DEV_THERMONODE,
+    "WindSense": DEV_WINDSENSE,
+    "RainDetect": DEV_RAINDETECT,
+    "AirQualityBox": DEV_AIRQUALITYBOX
+}
+
+DEVICE_TYPE_NAMES = {v: k for k, v in DEVICE_TYPE_MAP.items()}
+
+# Error codes
+ERR_INVALID_TOKEN = 0
+ERR_CRC_FAIL = 1
+
+# Error request codes
+REQ_NONE = 0
+REQ_RESEND_LAST = 1
 
 
+def calc_crc32(data: bytes) -> int:
+    """Calculate CRC32 checksum of data"""
+    return zlib.crc32(data) & 0xFFFFFFFF
+
+
+def pack_header(msg_type: int, device_type: int, battery_low: bool = False) -> int:
+    """Pack header byte"""
+    header = msg_type & 0x07
+    header |= (device_type & 0x03) << 3
+    header |= (1 if battery_low else 0) << 5
+    return header
+
+
+def unpack_header(header: int) -> tuple:
+    """Unpack header byte"""
+    msg_type = header & 0x07
+    device_type = (header >> 3) & 0x03
+    battery_low = bool((header >> 5) & 0x01)
+    return msg_type, device_type, battery_low
+
+
+def encode_register_ack(device_name: str, token: int) -> bytes:
+    """Encode REGISTER_ACK message"""
+    device_type = DEVICE_TYPE_MAP[device_name]
+    header = pack_header(MSG_REGISTER_ACK, device_type)
+    timestamp = int(time.time())
+    data = struct.pack('!BIH', header, timestamp, token & 0xFFFF)
+    crc = calc_crc32(data)
+    data += struct.pack('!I', crc)
+    return data
+
+
+def encode_data_ack(device_name: str, status: str = "OK") -> bytes:
+    """Encode DATA_ACK message"""
+    device_type = DEVICE_TYPE_MAP[device_name]
+    header = pack_header(MSG_DATA_ACK, device_type)
+    timestamp = int(time.time())
+    status_byte = 1 if status == "OK" else 0
+    data = struct.pack('!BIB', header, timestamp, status_byte)
+    crc = calc_crc32(data)
+    data += struct.pack('!I', crc)
+    return data
+
+
+def encode_error(device_name: str, error: str, request: str = None) -> bytes:
+    """Encode ERROR message"""
+    device_type = DEVICE_TYPE_MAP[device_name]
+    header = pack_header(MSG_ERROR, device_type)
+    timestamp = int(time.time())
+    error_code = ERR_CRC_FAIL if error == "CRC_FAIL" else ERR_INVALID_TOKEN
+    request_code = REQ_RESEND_LAST if request == "resend_last" else REQ_NONE
+    data = struct.pack('!BIBB', header, timestamp, error_code, request_code)
+    crc = calc_crc32(data)
+    data += struct.pack('!I', crc)
+    return data
+
+
+def encode_ping(device_name: str) -> bytes:
+    """Encode PING message"""
+    device_type = DEVICE_TYPE_MAP[device_name]
+    header = pack_header(MSG_PING, device_type)
+    timestamp = int(time.time())
+    data = struct.pack('!BI', header, timestamp)
+    crc = calc_crc32(data)
+    data += struct.pack('!I', crc)
+    return data
+
+
+def decode_data_payload(device_name: str, payload: bytes) -> dict:
+    """Decode device-specific data payload"""
+    if device_name == "ThermoNode":
+        temp, humidity, dew, pressure = struct.unpack('!hHhH', payload)
+        return {
+            "temperature": temp / 10.0,
+            "humidity": humidity / 10.0,
+            "dew_point": dew / 10.0,
+            "pressure": (pressure / 100.0) + 800.0
+        }
+    elif device_name == "WindSense":
+        speed, gust, direction, turbulence = struct.unpack('!HHHB', payload)
+        return {
+            "wind_speed": speed / 10.0,
+            "wind_gust": gust / 10.0,
+            "wind_direction": direction,
+            "turbulence": turbulence / 10.0
+        }
+    elif device_name == "RainDetect":
+        rainfall, moisture, risk, duration = struct.unpack('!HHBH', payload)
+        return {
+            "rainfall": rainfall / 10.0,
+            "soil_moisture": moisture / 10.0,
+            "flood_risk": risk,
+            "rain_duration": duration
+        }
+    elif device_name == "AirQualityBox":
+        co2, ozone, aqi = struct.unpack('!HHH', payload)
+        return {
+            "co2": co2,
+            "ozone": ozone / 10.0,
+            "air_quality_index": aqi
+        }
+
+
+def decode_message(data: bytes) -> dict:
+    """Decode any message type"""
+    if len(data) < 9:
+        raise ValueError(f"Message too short: {len(data)}")
+
+    header = data[0]
+    msg_type, device_type, battery_low = unpack_header(header)
+    device_name = DEVICE_TYPE_NAMES[device_type]
+
+    if msg_type == MSG_REGISTER:
+        header, timestamp, crc = struct.unpack('!BII', data)
+        expected_crc = calc_crc32(data[:-4])
+        if crc != expected_crc:
+            raise ValueError(f"CRC mismatch: got {crc:08X}, expected {expected_crc:08X}")
+        return {
+            "type": "register",
+            "device_type": device_name,
+            "timestamp": timestamp,
+            "battery_low": battery_low
+        }
+    elif msg_type == MSG_DATA:
+        header, timestamp, token = struct.unpack('!BIH', data[:7])
+        crc = struct.unpack('!I', data[-4:])[0]
+        expected_crc = calc_crc32(data[:-4])
+        if crc != expected_crc:
+            raise ValueError(f"CRC mismatch: got {crc:08X}, expected {expected_crc:08X}")
+        payload = data[7:-4]
+        data_dict = decode_data_payload(device_name, payload)
+        return {
+            "type": "data",
+            "device_type": device_name,
+            "timestamp": timestamp,
+            "token": token,
+            "battery_low": battery_low,
+            "data": data_dict
+        }
+    elif msg_type == MSG_PONG:
+        header, timestamp, token, crc = struct.unpack('!BIHI', data)
+        expected_crc = calc_crc32(data[:-4])
+        if crc != expected_crc:
+            raise ValueError(f"CRC mismatch: got {crc:08X}, expected {expected_crc:08X}")
+        return {
+            "type": "pong",
+            "device_type": device_name,
+            "timestamp": timestamp,
+            "token": token
+        }
+    else:
+        raise ValueError(f"Unknown message type: {msg_type}")
+
+
+# ============================================================================
+# SERVER IMPLEMENTATION
+# ============================================================================
 
 SERVER_IP = "127.0.0.1"
 SERVER_PORT = 9999
@@ -19,7 +218,7 @@ def current_time():
 async def handle_message(message, addr, transport):
     global ignore_acks_for
     try:
-        data = protocol.decode_message(message)
+        data = decode_message(message)
         msg_type = data.get("type")
         device_type = data.get("device_type")
 
@@ -33,13 +232,13 @@ async def handle_message(message, addr, transport):
                 "ping_attempts": 0
             }
             print(f"INFO: {device_type} REGISTERED at {current_time()}")
-            response = protocol.encode_register_ack(device_type, token)
+            response = encode_register_ack(device_type, token)
             transport.sendto(response, addr)
 
         elif msg_type == "data":
             token = data.get("token")
             if device_type not in registered_devices or registered_devices[device_type]["token"] != token:
-                response = protocol.encode_error(device_type, "INVALID_TOKEN")
+                response = encode_error(device_type, "INVALID_TOKEN")
                 transport.sendto(response, addr)
                 return
 
@@ -77,7 +276,7 @@ async def handle_message(message, addr, transport):
                     registered_devices[device_type]["no_ack_count"] = 0
                     ignore_acks_for = None
 
-            response = protocol.encode_data_ack(device_type, status="OK")
+            response = encode_data_ack(device_type, status="OK")
             transport.sendto(response, addr)
 
         elif msg_type == "pong":
@@ -92,17 +291,14 @@ async def handle_message(message, addr, transport):
     except ValueError as e:
         # CRC error detected
         if "CRC mismatch" in str(e):
-            # Try to extract device type from the message
             try:
                 header = message[0]
-                _, device_type_id, _ = protocol.unpack_header(header)
-                device_name = protocol.DEVICE_TYPE_NAMES.get(device_type_id)
+                _, device_type_id, _ = unpack_header(header)
+                device_name = DEVICE_TYPE_NAMES.get(device_type_id)
                 if device_name:
-                    # Get timestamp from message
-                    import struct
                     timestamp = struct.unpack('!I', message[1:5])[0]
                     print(f"INFO: {device_name} CORRUPTED DATA at {timestamp}. REQUESTING DATA")
-                    response = protocol.encode_error(device_name, "CRC_FAIL", "resend_last")
+                    response = encode_error(device_name, "CRC_FAIL", "resend_last")
                     transport.sendto(response, addr)
             except:
                 print(f"[ERROR] Error handling CRC failure: {e}")
@@ -112,7 +308,6 @@ async def handle_message(message, addr, transport):
         print(f"[ERROR] Error parsing message: {e}")
 
 
-
 async def activity_checker(transport):
     while True:
         await asyncio.sleep(activity_interval)
@@ -120,22 +315,18 @@ async def activity_checker(transport):
         for device_type, info in list(registered_devices.items()):
             time_since_last = now - info["last_seen"]
 
-            # If more than 15 seconds since last message
             if time_since_last > timeout_seconds:
                 if not info.get("disconnected", False):
-                    # First time detecting timeout - mark as disconnected and send ping
                     info["disconnected"] = True
                     info["ping_attempts"] = 1
                     print(f"WARNING: {device_type} DISCONNECTED!")
-                    ping = protocol.encode_ping(device_type)
+                    ping = encode_ping(device_type)
                     transport.sendto(ping, info["address"])
                 elif info["ping_attempts"] < 10:
-                    # Continue sending pings every 5 seconds, max 10 times
                     info["ping_attempts"] += 1
-                    # Print DISCONNECTED for the 2nd ping attempt as well (to match UAT4 requirement)
                     if info["ping_attempts"] == 2:
                         print(f"WARNING: {device_type} DISCONNECTED!")
-                    ping = protocol.encode_ping(device_type)
+                    ping = encode_ping(device_type)
                     transport.sendto(ping, info["address"])
 
 
@@ -148,9 +339,7 @@ class ServerProtocol:
         asyncio.create_task(handle_message(data, addr, self.transport))
 
     def error_received(self, exc):
-        # Handle network errors gracefully (e.g., when sending to disconnected clients)
         if isinstance(exc, OSError):
-            # This is expected when sending to a closed socket, just ignore it
             pass
         else:
             print(f"[ERROR] Protocol error: {exc}")
