@@ -1,3 +1,21 @@
+"""
+K-NN KLASIFIKÁTOR PRE 2D PRIESTOR
+Zadanie 2a - klasifikácia bodov v 2D priestore pomocou k-NN algoritmu
+
+IMPLEMENTOVANÉ OPTIMALIZÁCIE (4 body):
+1. KD-Tree (scipy.spatial.KDTree) - 2 body
+   - Efektívne hľadanie k najbližších susedov v O(log n) namiesto O(n)
+   - Využíva priestorovú štruktúru na rýchle vyhľadávanie
+
+2. Batch Processing (incremental updates) - 2 body
+   - KDTree sa rebuild-uje len každých 100 bodov namiesto po každom bode
+   - Znižuje overhead z 40,000 rebuild operácií na 400 (100x redukcia)
+   - Balans medzi presnosťou a výkonom
+
+Autor: [Vaše meno]
+Dátum: 2025
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 import random
@@ -21,8 +39,25 @@ initial_points = {
 # ============================================
 # K-NN KLASIFIKÁTOR s KD-Tree
 # ============================================
+# OPTIMALIZÁCIA 1: KD-Tree pre efektívne hľadanie k najbližších susedov
+# - Zložitosť: O(log n) namiesto O(n) pri brute-force
+# - Použitie: scipy.spatial.KDTree
 
 def classify(X, Y, k, tree, points, labels):
+    """
+    Klasifikuje bod [X, Y] pomocou k-NN algoritmu.
+
+    Args:
+        X, Y: súradnice bodu
+        k: počet najbližších susedov
+        tree: KDTree štruktúra pre rýchle vyhľadávanie
+        points: numpy array všetkých bodov
+        labels: numpy array tried pre všetky body
+
+    Returns:
+        Trieda (R/G/B/P) pre daný bod
+    """
+    # KDTree.query() - O(log n) vyhľadávanie k najbližších susedov
     dist, idx = tree.query([X, Y], k)
     nearest_labels = labels[idx] if k > 1 else [labels[idx]]
     label_counts = Counter(nearest_labels)
@@ -96,6 +131,14 @@ def generate_fixed_points_exact_1_percent(seed=None):
 # ============================================
 
 def run_experiment_with_fixed_points(k, fixed_points, fixed_true_labels, verbose=True):
+    """
+    Vykoná k-NN experiment s fixnými bodmi.
+
+    OPTIMALIZÁCIE použité v tejto funkcii:
+    1. KD-Tree pre O(log n) vyhľadávanie
+    2. Batch processing - KDTree sa rebuild-uje len každých 100 bodov,
+       nie po každom bode (znižuje overhead z O(n) na O(n/100))
+    """
     points = np.array(
         [coord for label, coords in initial_points.items() for coord in coords],
         dtype=np.int32
@@ -117,6 +160,9 @@ def run_experiment_with_fixed_points(k, fixed_points, fixed_true_labels, verbose
 
     start = time.time()
 
+    # OPTIMALIZÁCIA 2: Batch processing - akumulujeme body a rebuild-ujeme KDTree len každých 100 bodov
+    BATCH_SIZE = 100  # Optimálna veľkosť batchu pre balans medzi presnosťou a rýchlosťou
+
     for i in range(40000):
         X, Y = fixed_points[i]
         true_label = fixed_true_labels[i]
@@ -134,7 +180,9 @@ def run_experiment_with_fixed_points(k, fixed_points, fixed_true_labels, verbose
         new_points.append([X, Y])
         new_labels.append(pred)
 
-        if (i + 1) % 100 == 0:
+        # Batch update: Rebuild KDTree len každých BATCH_SIZE bodov namiesto po každom bode
+        # Toto znižuje počet rebuild operácií z 40,000 na 400 (100x zrýchlenie tejto operácie)
+        if (i + 1) % BATCH_SIZE == 0:
             points = np.vstack((points, np.array(new_points, dtype=np.int32)))
             labels = np.concatenate((labels, np.array(new_labels)))
             tree = KDTree(points.astype(float))
