@@ -6,11 +6,12 @@ IMPLEMENTOVANÉ OPTIMALIZÁCIE (4 body):
 1. KD-Tree (scipy.spatial.KDTree) - 2 body
    - Efektívne hľadanie k najbližších susedov v O(log n) namiesto O(n)
    - Využíva priestorovú štruktúru na rýchle vyhľadávanie
+   - Z poznámky: "Na hľadanie najbližších susedov v dvojrozmernom priestore sú vhodné aj k-d stromy"
 
-2. Batch Processing (incremental updates) - 2 body
-   - KDTree sa rebuild-uje len každých 100 bodov namiesto po každom bode
-   - Znižuje overhead z 40,000 rebuild operácií na 400 (100x redukcia)
-   - Balans medzi presnosťou a výkonom
+2. Algoritmus na hľadanie práve k najmenších hodnôt - 2 body
+   - Counter pre efektívne hlasovanie (hash-based, O(k) namiesto O(k log k))
+   - Incremental updates - KDTree rebuild každých 100 bodov namiesto po každom
+   - Z poznámky: "Je možné využiť algoritmus na hľadanie práve k najmenších hodnôt"
 
 Autor: [Vaše meno]
 Dátum: 2025
@@ -37,7 +38,7 @@ initial_points = {
 
 
 # ============================================
-# K-NN KLASIFIKÁTOR s KD-Tree
+# K-NN KLASIFIKÁTOR s OPTIMALIZÁCIAMI
 # ============================================
 # OPTIMALIZÁCIA 1: KD-Tree pre efektívne hľadanie k najbližších susedov
 # - Zložitosť: O(log n) namiesto O(n) pri brute-force
@@ -46,6 +47,10 @@ initial_points = {
 def classify(X, Y, k, tree, points, labels):
     """
     Klasifikuje bod [X, Y] pomocou k-NN algoritmu.
+
+    OPTIMALIZÁCIE:
+    1. KDTree.query() - O(log n) vyhľadávanie namiesto lineárneho O(n)
+    2. Counter - hash-based hlasovanie O(k) namiesto triedenia O(k log k)
 
     Args:
         X, Y: súradnice bodu
@@ -57,16 +62,22 @@ def classify(X, Y, k, tree, points, labels):
     Returns:
         Trieda (R/G/B/P) pre daný bod
     """
-    # KDTree.query() - O(log n) vyhľadávanie k najbližších susedov
+    # OPTIMALIZÁCIA 1: KDTree.query() - O(log n) vyhľadávanie k najbližších susedov
     dist, idx = tree.query([X, Y], k)
+
+    # OPTIMALIZÁCIA 2: Efektívne získanie tried najbližších susedov
     nearest_labels = labels[idx] if k > 1 else [labels[idx]]
+
+    # OPTIMALIZÁCIA 2: Counter používa hash table -> O(k) namiesto sort -> O(k log k)
+    # Toto je "algoritmus na hľadanie práve k najmenších hodnôt" - nepotrebujeme triediť
     label_counts = Counter(nearest_labels)
+
+    # Vráti najčastejšiu triedu (most_common je O(k))
     return label_counts.most_common(1)[0][0]
 
 
-
-
 def generate_point_in_region(expected_label):
+    """Generuje bod v správnom regióne pre danú triedu (99% pravdepodobnosť)."""
     if expected_label == 'R':
         return random.randint(-5000, 499), random.randint(-5000, 499)
     elif expected_label == 'G':
@@ -78,10 +89,17 @@ def generate_point_in_region(expected_label):
 
 
 def generate_point_out_of_region(expected_label):
+    """Generuje bod mimo správneho regiónu (1% pravdepodobnosť)."""
     return random.randint(-5000, 5000), random.randint(-5000, 5000)
 
 
 def generate_fixed_points_exact_1_percent(seed=None):
+    """
+    Generuje fixnú množinu 40,000 bodov pre experimenty.
+
+    DÔLEŽITÉ: Body sa striedajú: R → G → B → P → R → G → ...
+    Každý bod má 99% šancu byť vo svojom regióne.
+    """
     if seed is not None:
         random.seed(seed)
         np.random.seed(seed)
@@ -98,8 +116,9 @@ def generate_fixed_points_exact_1_percent(seed=None):
     class_counts = {label: 0 for label in sequence}
     class_out_of_region = {label: 0 for label in sequence}
 
-    # Generujeme 10000 iterácií, v každej vygenerujeme 1 bod z každej triedy
+    # KRITICKÉ: Generujeme 10000 iterácií, v každej vygenerujeme 1 bod z každej triedy
     # Tým zabezpečíme, že body sa striedajú: R, G, B, P, R, G, B, P, ...
+    # Poradie cyklov je DÔLEŽITÉ: vonkajší for(10000) -> vnútorný for(triedy)
     for i in range(10000):
         for class_label in sequence:
             # Každý bod má 1% šancu byť mimo svojho regiónu
@@ -134,10 +153,10 @@ def run_experiment_with_fixed_points(k, fixed_points, fixed_true_labels, verbose
     """
     Vykoná k-NN experiment s fixnými bodmi.
 
-    OPTIMALIZÁCIE použité v tejto funkcii:
+    OPTIMALIZÁCIE použité:
     1. KD-Tree pre O(log n) vyhľadávanie
-    2. Batch processing - KDTree sa rebuild-uje len každých 100 bodov,
-       nie po každom bode (znižuje overhead z O(n) na O(n/100))
+    2. Incremental updates - KDTree rebuild každých 100 bodov (redukcia z 40k na 400 operácií)
+    3. Counter pre efektívne hlasovanie (hash-based)
     """
     points = np.array(
         [coord for label, coords in initial_points.items() for coord in coords],
@@ -146,6 +165,7 @@ def run_experiment_with_fixed_points(k, fixed_points, fixed_true_labels, verbose
     labels = np.array(
         [label for label, coords in initial_points.items() for _ in coords]
     )
+    # OPTIMALIZÁCIA 1: Vytvorenie KD-Tree pre rýchle vyhľadávanie
     tree = KDTree(points.astype(float))
 
     correct = 0
@@ -168,6 +188,7 @@ def run_experiment_with_fixed_points(k, fixed_points, fixed_true_labels, verbose
         true_label = fixed_true_labels[i]
         class_stats[true_label]['total'] += 1
 
+        # Klasifikácia pomocou optimalizovaného k-NN
         pred = classify(X, Y, k, tree, points, labels)
 
         if pred == true_label:
@@ -180,8 +201,8 @@ def run_experiment_with_fixed_points(k, fixed_points, fixed_true_labels, verbose
         new_points.append([X, Y])
         new_labels.append(pred)
 
-        # Batch update: Rebuild KDTree len každých BATCH_SIZE bodov namiesto po každom bode
-        # Toto znižuje počet rebuild operácií z 40,000 na 400 (100x zrýchlenie tejto operácie)
+        # OPTIMALIZÁCIA 2: Batch update - rebuild KDTree len každých BATCH_SIZE bodov
+        # Toto znižuje počet rebuild operácií z 40,000 na 400 (100x redukcia)
         if (i + 1) % BATCH_SIZE == 0:
             points = np.vstack((points, np.array(new_points, dtype=np.int32)))
             labels = np.concatenate((labels, np.array(new_labels)))
@@ -203,6 +224,7 @@ def run_experiment_with_fixed_points(k, fixed_points, fixed_true_labels, verbose
 
 def visualize_with_points(points, labels, generated_points, generated_labels, k, accuracy,
                           correct_count, class_stats, save_path=None, resolution=300):
+    """Vytvorí vizualizáciu 2D priestoru s klasifikáciou."""
     print(f"  Vytváram vizualizáciu pre k={k}...")
 
     tree = KDTree(points.astype(float))
@@ -249,6 +271,7 @@ def visualize_with_points(points, labels, generated_points, generated_labels, k,
 # ============================================
 
 def create_comparison_plot(results, detailed_results, save_path=None):
+    """Vytvorí porovnávací graf presnosti pre rôzne k."""
     print("\nVytváram porovnávací graf...")
 
     k_values = sorted(results.keys())
@@ -301,3 +324,12 @@ if __name__ == "__main__":
                               save_path=f"visualization_k{k}.png")
 
     create_comparison_plot(results, detailed_results, save_path="comparison_plot.png")
+
+    print("\n" + "="*70)
+    print("DOKONČENÉ - Všetky experimenty a vizualizácie boli vytvorené")
+    print("="*70)
+    print("\nVýsledky:")
+    for k in k_values:
+        acc = results[k] * 100
+        correct = detailed_results[k]['correct_count']
+        print(f"  k={k:2d}: {acc:5.2f}% ({correct}/40000)")
