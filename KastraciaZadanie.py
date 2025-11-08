@@ -56,29 +56,37 @@ def generate_fixed_points_exact_1_percent(seed=None):
     out_of_region_count = 0
 
     print("Generujem fixnú množinu 40,000 bodov (INT súradnice)...")
-    print("PRESNE 400 bodov (1%) bude mimo regiónu - 100 z každej triedy")
+    print("Každý bod má 99% šancu byť vo svojom regióne a 1% šancu byť kdekoľvek")
+    print("Body sa striedajú: R → G → B → P → R → G → ...")
     print("-" * 70)
 
-    for class_label in sequence:
-        print(f"\n  Generujem triedu {class_label}:")
-        indices = list(range(10000))
-        random.shuffle(indices)
-        out_of_region_indices = set(indices[:100])
+    class_counts = {label: 0 for label in sequence}
+    class_out_of_region = {label: 0 for label in sequence}
 
-        for i in range(10000):
-            if i in out_of_region_indices:
+    # Generujeme 10000 iterácií, v každej vygenerujeme 1 bod z každej triedy
+    # Tým zabezpečíme, že body sa striedajú: R, G, B, P, R, G, B, P, ...
+    for i in range(10000):
+        for class_label in sequence:
+            # Každý bod má 1% šancu byť mimo svojho regiónu
+            if random.random() < 0.01:  # 1% šanca
                 X, Y = generate_point_out_of_region(class_label)
                 out_of_region_count += 1
-            else:
+                class_out_of_region[class_label] += 1
+            else:  # 99% šanca
                 X, Y = generate_point_in_region(class_label)
 
             all_points.append([X, Y])
             all_true_labels.append(class_label)
+            class_counts[class_label] += 1
 
-        print(f"    ✓ Vygenerovaných 10,000 bodov (9,900 v regióne + 100 mimo)")
+    print()
+    for class_label in sequence:
+        in_region = class_counts[class_label] - class_out_of_region[class_label]
+        out_region = class_out_of_region[class_label]
+        print(f"  Trieda {class_label}: {class_counts[class_label]} bodov ({in_region} v regióne + {out_region} mimo)")
 
     print(f"\n{'=' * 70}")
-    print(f"✓ Celkovo: {len(all_points):,} bodov (1% mimo regiónu)\n")
+    print(f"✓ Celkovo: {len(all_points):,} bodov (~{out_of_region_count} mimo regiónu = {out_of_region_count/400:.1f}%)\n")
 
     return np.array(all_points, dtype=np.int32), np.array(all_true_labels), out_of_region_count
 
@@ -222,16 +230,16 @@ if __name__ == "__main__":
     env_seed = os.environ.get("FIXED_SEED")
     if env_seed is not None:
         seed = int(env_seed)
-        print(f"✓ Használt seed (FIXED_SEED) = {seed}")
+        print(f"✓ Použitý seed (FIXED_SEED) = {seed}")
     else:
         seed = int.from_bytes(os.urandom(8), "big") % (2**32)
-        print(f"✓ Generált futtatás-seed: {seed} (ha reprodukálni akarod, állítsd FIXED_SEED erre)")
+        print(f"✓ Vygenerovaný seed: {seed} (pre reprodukovanie nastav FIXED_SEED na túto hodnotu)")
 
     fixed_points, fixed_true_labels, _ = generate_fixed_points_exact_1_percent(seed=seed)
 
     results = {}
     detailed_results = {}
-    k_values = [1, 3, 5, 7]
+    k_values = [1, 3, 7, 15]
 
     for k in k_values:
         acc, points, labels, gen_pts, gen_lbls, class_stats, correct = run_experiment_with_fixed_points(
