@@ -55,18 +55,27 @@ def generate_fixed_points_exact_1_percent(seed=None):
     all_points, all_true_labels = [], []
     out_of_region_count = 0
 
-    print("Generujem fixnú množinu 40,000 bodov (INT súradnice)...")
+    print("Generujem fixnú množinu 40,000 bodov (INT súradnice) - ALTERNATING MODE...")
     print("PRESNE 400 bodov (1%) bude mimo regiónu - 100 z každej triedy")
     print("-" * 70)
 
+    # Pre každú triedu určíme, ktoré z 10000 bodov budú mimo regiónu
+    out_of_region_indices_per_class = {}
     for class_label in sequence:
-        print(f"\n  Generujem triedu {class_label}:")
         indices = list(range(10000))
         random.shuffle(indices)
-        out_of_region_indices = set(indices[:100])
+        out_of_region_indices_per_class[class_label] = set(indices[:100])
 
-        for i in range(10000):
-            if i in out_of_region_indices:
+    # Počítadlá pre každú triedu
+    class_counters = {c: 0 for c in sequence}
+
+    # Generujeme body s ALTERNUJÚCIM poradím: R, G, B, P, R, G, B, P, ...
+    for i in range(10000):  # 10000 iterácií, každá generuje 4 body (1 z každej triedy)
+        for class_label in sequence:
+            idx = class_counters[class_label]
+
+            # Kontrola, či tento bod má byť mimo regiónu
+            if idx in out_of_region_indices_per_class[class_label]:
                 X, Y = generate_point_out_of_region(class_label)
                 out_of_region_count += 1
             else:
@@ -74,11 +83,18 @@ def generate_fixed_points_exact_1_percent(seed=None):
 
             all_points.append([X, Y])
             all_true_labels.append(class_label)
+            class_counters[class_label] += 1
 
-        print(f"    ✓ Vygenerovaných 10,000 bodov (9,900 v regióne + 100 mimo)")
+    # Výpis štatistík
+    print("\n  Štatistiky pre každú triedu:")
+    for class_label in sequence:
+        in_region = 9900
+        out_region = 100
+        print(f"    {class_label}: {class_counters[class_label]} bodov ({in_region} v regióne + {out_region} mimo)")
 
     print(f"\n{'=' * 70}")
-    print(f"✓ Celkovo: {len(all_points):,} bodov (1% mimo regiónu)\n")
+    print(f"✓ Celkovo: {len(all_points):,} bodov (1% mimo regiónu)")
+    print(f"✓ Poradie: R→G→B→P→R→G→B→P... (alternujúce triedy)\n")
 
     return np.array(all_points, dtype=np.int32), np.array(all_true_labels), out_of_region_count
 
@@ -231,7 +247,7 @@ if __name__ == "__main__":
 
     results = {}
     detailed_results = {}
-    k_values = [1, 3, 5, 7]
+    k_values = [1, 3, 7, 15]
 
     for k in k_values:
         acc, points, labels, gen_pts, gen_lbls, class_stats, correct = run_experiment_with_fixed_points(
