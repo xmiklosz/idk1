@@ -24,9 +24,50 @@ initial_points = {
 
 def classify(X, Y, k, tree, points, labels):
     dist, idx = tree.query([X, Y], k)
-    nearest_labels = labels[idx] if k > 1 else [labels[idx]]
+
+    # Handle k=1 case
+    if k == 1:
+        return labels[idx]
+
+    # Get distances and labels for k nearest neighbors
+    distances = dist if isinstance(dist, np.ndarray) else [dist]
+    nearest_labels = labels[idx]
+
+    # Count votes for each class
     label_counts = Counter(nearest_labels)
-    return label_counts.most_common(1)[0][0]
+    max_votes = max(label_counts.values())
+
+    # Get all classes with max votes (potential tie)
+    tied_classes = [label for label, count in label_counts.items() if count == max_votes]
+
+    # If no tie, return the winner
+    if len(tied_classes) == 1:
+        return tied_classes[0]
+
+    # Tie-breaking: use sum of distances for tied classes
+    distance_sums = {}
+    for i, label in enumerate(nearest_labels):
+        if label in tied_classes:
+            if label not in distance_sums:
+                distance_sums[label] = 0
+            distance_sums[label] += distances[i]
+
+    # Find class(es) with minimum distance sum
+    min_dist_sum = min(distance_sums.values())
+    closest_classes = [label for label, dist_sum in distance_sums.items() if dist_sum == min_dist_sum]
+
+    # If still tied, use fixed color order
+    if len(closest_classes) == 1:
+        return closest_classes[0]
+
+    # Final tie-breaker: use predefined color order
+    color_order = ['R', 'G', 'B', 'P']
+    for color in color_order:
+        if color in closest_classes:
+            return color
+
+    # Fallback (should never reach here)
+    return tied_classes[0]
 
 
 
