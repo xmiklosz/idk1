@@ -1,0 +1,1 @@
+Hello, this is a test file for Huffman compression! It has repeated characters like aaaaaaa, bbbbbb, ccccc to make compression effective.
