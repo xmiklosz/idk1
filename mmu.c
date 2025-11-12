@@ -42,14 +42,14 @@ int get_physical_address(uint16_t virtual_address, uint16_t *physical_address) {
 
     tPageTableEntry *entry = &current_page_table[page_number];
 
+    // Check if page is present (MUST CHECK THIS FIRST!)
+    if (entry->p_bit == 0) {
+        return -1;  // Page fault
+    }
+
     // Check if page is accessible (at least one of r, w, x must be set)
     if (entry->r == 0 && entry->w == 0 && entry->x == 0) {
         return -2;  // Segmentation fault
-    }
-
-    // Check if page is present
-    if (entry->p_bit == 0) {
-        return -1;  // Page fault
     }
 
     // Calculate physical address
@@ -89,7 +89,12 @@ int fetch_instruction(uint16_t virtual_address, uint8_t *data) {
 
     tPageTableEntry *entry = &current_page_table[page_number];
 
-    // Check if page is accessible (must check this first)
+    // Check if page is present (MUST CHECK THIS FIRST!)
+    if (entry->p_bit == 0) {
+        return -1;  // Page fault
+    }
+
+    // Check if page is accessible
     if (entry->r == 0 && entry->w == 0 && entry->x == 0) {
         return -2;  // Segmentation fault
     }
@@ -97,11 +102,6 @@ int fetch_instruction(uint16_t virtual_address, uint8_t *data) {
     // Check execute permission
     if (entry->x == 0) {
         return -3;  // Access violation
-    }
-
-    // Check if page is present
-    if (entry->p_bit == 0) {
-        return -1;  // Page fault
     }
 
     // Get physical address
