@@ -42,14 +42,9 @@ int get_physical_address(uint16_t virtual_address, uint16_t *physical_address) {
 
     tPageTableEntry *entry = &current_page_table[page_number];
 
-    // Check if page is present (MUST CHECK THIS FIRST!)
+    // Check if page is present
     if (entry->p_bit == 0) {
         return -1;  // Page fault
-    }
-
-    // Check if page is accessible (at least one of r, w, x must be set)
-    if (entry->r == 0 && entry->w == 0 && entry->x == 0) {
-        return -2;  // Segmentation fault
     }
 
     // Calculate physical address
