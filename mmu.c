@@ -59,7 +59,7 @@ int fetch_instruction(uint16_t virtual_address, uint8_t *data) {
 
     const tRam *ram = get_ram_state();
     if (ram == NULL) {
-        return -4;
+        return -5;
     }
 
     if (current_page_table == NULL) {
@@ -122,7 +122,7 @@ int load_data(uint16_t virtual_address, uint8_t *data) {
 
     const tRam *ram = get_ram_state();
     if (ram == NULL) {
-        return -4;
+        return -5;
     }
 
     if (current_page_table == NULL) {
@@ -181,7 +181,7 @@ int load_data(uint16_t virtual_address, uint8_t *data) {
 int store_data(uint16_t virtual_address, uint8_t data) {
     const tRam *ram = get_ram_state();
     if (ram == NULL) {
-        return -4;
+        return -5;
     }
 
     if (current_page_table == NULL) {
