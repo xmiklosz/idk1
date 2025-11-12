@@ -95,7 +95,7 @@ int create_task(const tPageTableEntry *page_table, uint8_t max_frames, void *add
         task_mgr->tasks[free_slot].page_table[i].p_bit = 0;  // Not present initially
         task_mgr->tasks[free_slot].page_table[i].r_bit = 0;
         task_mgr->tasks[free_slot].page_table[i].m_bit = 0;
-        task_mgr->tasks[free_slot].page_table[i].frame_id = 0;
+        // frame_id is preserved from page_table[i]
     }
 
     return new_pid;
