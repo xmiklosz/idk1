@@ -1,7 +1,6 @@
 #include "mmu.h"
 #include "ram.h"
 #include <stddef.h>
-#include <math.h>
 
 static tPageTableEntry *current_page_table = NULL;
 
@@ -42,14 +41,9 @@ int get_physical_address(uint16_t virtual_address, uint16_t *physical_address) {
 
     tPageTableEntry *entry = &current_page_table[page_number];
 
-    // Check if page is present (highest priority)
+    // Check if page is present
     if (entry->p_bit == 0) {
         return -1;  // Page fault
-    }
-
-    // Check if page is accessible
-    if (entry->r == 0 && entry->w == 0 && entry->x == 0) {
-        return -2;  // Segmentation fault
     }
 
     // Calculate physical address
@@ -89,7 +83,7 @@ int fetch_instruction(uint16_t virtual_address, uint8_t *data) {
 
     tPageTableEntry *entry = &current_page_table[page_number];
 
-    // Check if page is present (MUST CHECK THIS FIRST!)
+    // Check if page is present FIRST
     if (entry->p_bit == 0) {
         return -1;  // Page fault
     }
@@ -113,7 +107,6 @@ int fetch_instruction(uint16_t virtual_address, uint8_t *data) {
 
     // Read data from RAM
     uint8_t *ram_base = (uint8_t *)ram;
-    ram_base = ram_base - sizeof(tRam) - ((ram->size / ram->page_size + 7) / 8);
     *data = ram_base[physical_address];
 
     // Set referenced bit
@@ -153,7 +146,7 @@ int load_data(uint16_t virtual_address, uint8_t *data) {
 
     tPageTableEntry *entry = &current_page_table[page_number];
 
-    // Check if page is present (MUST CHECK THIS FIRST!)
+    // Check if page is present FIRST
     if (entry->p_bit == 0) {
         return -1;  // Page fault
     }
@@ -177,7 +170,6 @@ int load_data(uint16_t virtual_address, uint8_t *data) {
 
     // Read data from RAM
     uint8_t *ram_base = (uint8_t *)ram;
-    ram_base = ram_base - sizeof(tRam) - ((ram->size / ram->page_size + 7) / 8);
     *data = ram_base[physical_address];
 
     // Set referenced bit
@@ -213,7 +205,7 @@ int store_data(uint16_t virtual_address, uint8_t data) {
 
     tPageTableEntry *entry = &current_page_table[page_number];
 
-    // Check if page is present (MUST CHECK THIS FIRST!)
+    // Check if page is present FIRST
     if (entry->p_bit == 0) {
         return -1;  // Page fault
     }
@@ -237,7 +229,6 @@ int store_data(uint16_t virtual_address, uint8_t data) {
 
     // Write data to RAM
     uint8_t *ram_base = (uint8_t *)ram;
-    ram_base = ram_base - sizeof(tRam) - ((ram->size / ram->page_size + 7) / 8);
     ram_base[physical_address] = data;
 
     // Set referenced and modified bits
