@@ -153,7 +153,12 @@ int load_data(uint16_t virtual_address, uint8_t *data) {
 
     tPageTableEntry *entry = &current_page_table[page_number];
 
-    // Check if page is accessible (must check this first)
+    // Check if page is present (MUST CHECK THIS FIRST!)
+    if (entry->p_bit == 0) {
+        return -1;  // Page fault
+    }
+
+    // Check if page is accessible
     if (entry->r == 0 && entry->w == 0 && entry->x == 0) {
         return -2;  // Segmentation fault
     }
@@ -161,11 +166,6 @@ int load_data(uint16_t virtual_address, uint8_t *data) {
     // Check read permission
     if (entry->r == 0) {
         return -3;  // Access violation
-    }
-
-    // Check if page is present
-    if (entry->p_bit == 0) {
-        return -1;  // Page fault
     }
 
     // Get physical address
@@ -213,7 +213,12 @@ int store_data(uint16_t virtual_address, uint8_t data) {
 
     tPageTableEntry *entry = &current_page_table[page_number];
 
-    // Check if page is accessible (must check this first)
+    // Check if page is present (MUST CHECK THIS FIRST!)
+    if (entry->p_bit == 0) {
+        return -1;  // Page fault
+    }
+
+    // Check if page is accessible
     if (entry->r == 0 && entry->w == 0 && entry->x == 0) {
         return -2;  // Segmentation fault
     }
@@ -221,11 +226,6 @@ int store_data(uint16_t virtual_address, uint8_t data) {
     // Check write permission
     if (entry->w == 0) {
         return -3;  // Access violation
-    }
-
-    // Check if page is present
-    if (entry->p_bit == 0) {
-        return -1;  // Page fault
     }
 
     // Get physical address
