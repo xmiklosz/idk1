@@ -1,0 +1,141 @@
+================================================================================
+FIITMeteo Binary Protocol - SUBMISSION GUIDE
+================================================================================
+
+REQUIRED FILES FOR SUBMISSION:
+------------------------------
+
+Your xmiklosz.zip package must contain exactly 4 files:
+
+1. server.py          - The binary protocol server
+2. tester.py          - The binary protocol tester
+3. fiitmeteo.lua      - The Wireshark dissector
+4. xmiklosz.pdf       - Documentation (convert DOCUMENTATION.md to PDF)
+
+
+HOW TO CREATE SUBMISSION PACKAGE:
+---------------------------------
+
+Step 1: Convert Documentation to PDF
+   You need to convert DOCUMENTATION.md to xmiklosz.pdf
+
+   Options:
+   a) Use pandoc (if installed):
+      pandoc DOCUMENTATION.md -o xmiklosz.pdf --pdf-engine=xelatex
+
+   b) Online converter:
+      - Upload DOCUMENTATION.md to https://www.markdowntopdf.com/
+      - Download as xmiklosz.pdf
+
+   c) Use markdown editor:
+      - Open DOCUMENTATION.md in VSCode, Typora, or similar
+      - Export as PDF → save as xmiklosz.pdf
+
+Step 2: Run Submission Script
+   ./create_submission.sh
+
+   This will create xmiklosz.zip with the 4 required files.
+
+
+MANUAL CREATION (if script fails):
+----------------------------------
+
+If the script doesn't work, create manually:
+
+   zip xmiklosz.zip server.py tester.py fiitmeteo.lua xmiklosz.pdf
+
+Verify contents:
+   unzip -l xmiklosz.zip
+
+Should show:
+   server.py
+   tester.py
+   fiitmeteo.lua
+   xmiklosz.pdf
+
+
+TESTING BEFORE SUBMISSION:
+--------------------------
+
+UAT1 - Basic Registration:
+   Terminal 1: python3 server.py (select 2)
+   Terminal 2: python3 tester.py (select 2)
+   Result: All 4 sensors register and send data
+
+UAT2 - Battery Warning:
+   With tester running: select 4, choose sensor, answer 'a' for battery
+   Result: Server shows "WARNING: LOW BATTERY"
+
+UAT3 - CRC Error:
+   With tester running: select 5, choose sensor
+   Result: Server detects CRC error, client resends
+
+UAT4 - Disconnect:
+   With tester running: select 6, choose sensor
+   Result: Server detects timeout, sends PINGs, client reconnects
+
+UAT5 - ACK Timeout:
+   Server: type 'uat5', enter sensor name
+   Result: Client retries, server ACKs on 4th attempt
+
+
+FILE SIZES (reference):
+----------------------
+
+server.py       : ~13 KB
+tester.py       : ~20 KB
+fiitmeteo.lua   : ~9 KB
+xmiklosz.pdf    : ~150-300 KB (depends on conversion)
+
+Total zip       : ~50-100 KB
+
+
+IMPORTANT NOTES:
+---------------
+
+✓ Use ZIP format (NOT RAR!)
+✓ Filename must be: xmiklosz.zip
+✓ Documentation must be: xmiklosz.pdf (PDF format, not .md!)
+✓ Only submit the 4 files listed above
+✓ Do NOT include: protocol_comparison.py, README.md, or other helper files
+
+✓ All efficiency measurements are already in the DOCUMENTATION.md
+✓ The protocol_comparison.py was just used to generate those measurements
+✓ You don't need to submit any extra files
+
+
+WHAT'S IN THE DOCUMENTATION:
+----------------------------
+
+The DOCUMENTATION.md (→ xmiklosz.pdf) includes:
+
+✓ Flowcharts for server and client
+✓ JSON protocol message examples
+✓ Binary protocol specifications
+✓ Sequence diagrams for UAT1-5
+✓ Libraries used
+✓ L2-L4 encapsulation example
+✓ Efficiency measurements:
+  - Single message comparison (JSON vs Binary vs MQTT)
+  - Control messages comparison
+  - 10-minute, 24-hour, 1-month scenarios
+  - Detailed breakdown and charts
+✓ Appendix A: Educational evaluation
+
+Everything needed for grading is in these 4 files!
+
+
+SUBMISSION CHECKLIST:
+--------------------
+
+□ Created xmiklosz.pdf from DOCUMENTATION.md
+□ Verified all 4 files exist: server.py, tester.py, fiitmeteo.lua, xmiklosz.pdf
+□ Created xmiklosz.zip (NOT .rar!)
+□ Tested zip contents: unzip -l xmiklosz.zip
+□ Tested UAT1-5 scenarios
+□ Ready to submit!
+
+
+================================================================================
+Questions? Check DOCUMENTATION.md or SUBMISSION_CHECKLIST.md
+================================================================================
