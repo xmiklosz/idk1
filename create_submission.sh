@@ -11,13 +11,9 @@ echo ""
 # Check if all required files exist
 echo "Checking required files..."
 required_files=(
-    "server_binary.py"
-    "tester_binary.py"
+    "server.py"
+    "tester.py"
     "fiitmeteo.lua"
-    "DOCUMENTATION.md"
-    "README.md"
-    "BINARY_PROTOCOL_SPEC.md"
-    "protocol_comparison.py"
 )
 
 missing_files=0
@@ -65,13 +61,10 @@ fi
 echo ""
 echo "Creating xmiklosz.zip..."
 zip -r xmiklosz.zip \
-    server_binary.py \
-    tester_binary.py \
+    server.py \
+    tester.py \
     fiitmeteo.lua \
-    xmiklosz.pdf \
-    README.md \
-    BINARY_PROTOCOL_SPEC.md \
-    protocol_comparison.py
+    xmiklosz.pdf
 
 if [ $? -eq 0 ]; then
     echo ""
@@ -85,7 +78,13 @@ if [ $? -eq 0 ]; then
     echo "File size:"
     ls -lh xmiklosz.zip
     echo ""
-    echo "The submission package 'xmiklosz.zip' is ready!"
+    echo "✓ The submission package 'xmiklosz.zip' is ready!"
+    echo ""
+    echo "Required files:"
+    echo "  ✓ server.py       - Binary protocol server"
+    echo "  ✓ tester.py       - Binary protocol tester"
+    echo "  ✓ fiitmeteo.lua   - Wireshark dissector"
+    echo "  ✓ xmiklosz.pdf    - Documentation"
 else
     echo ""
     echo "Error: Failed to create zip file!"
