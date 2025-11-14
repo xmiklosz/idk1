@@ -1,0 +1,23 @@
+# Compiled binaries
+compress
+decompress
+huffman
+*.exe
+*.out
+
+# Test files
+test_*.txt
+test_*.huff
+*_decompressed.txt
+
+# Compressed files
+*.huff
+
+# Object files
+*.o
+*.obj
+
+# Editor files
+*.swp
+*~
+.DS_Store
