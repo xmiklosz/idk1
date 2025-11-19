@@ -1,535 +1,757 @@
-import asyncio
-import struct
+import socket
 import time
-import zlib
 import random
+import threading
+from binary_protocol import encode_message, decode_message
 
-SERVER_IP = "127.0.0.1"
-SERVER_PORT = 9999
+IP = None
+PORT = None
+TIMEOUT = 1.0
+TOKENS = {}
+PAUSED_SENSORS = {}
+SIMULATE_ERROR_SENSORS = {}
 
-# Protocol Constants
-MSG_REGISTER = 0x0
-MSG_REGISTER_ACK = 0x1
-MSG_DATA = 0x2
-MSG_CONTROL = 0x3
+def now_unix():
+    return int(time.time())
 
-DEVICE_THERMONODE = 0x0
-DEVICE_WINDSENSE = 0x1
-DEVICE_RAINDETECT = 0x2
-DEVICE_AIRQUALITY = 0x3
+def verify_checksum_client(msg):
+    """Check if message has valid checksum."""
+    return msg.get("_checksum_valid", False)
 
-CTRL_DATA_ACK = 0x0
-CTRL_PING = 0x1
-CTRL_PONG = 0x2
-CTRL_ERROR = 0x3
+def ThermoNode_payload():
+    temp = round(random.uniform(-50.0, 60.0), 1)
+    hum = round(random.uniform(0.0, 100.0), 1)
+    dew = round(random.uniform(-50.0, 60.0), 1)
+    pressure = round(random.uniform(800.0, 1100.0), 2)
+    return {"temp": f"{temp}°C", "hum": f"{hum}%", "dew": f"{dew}°C", "pressure": f"{pressure}hPa"}
 
-ERR_INVALID_TOKEN = 0x01
-ERR_CRC_FAIL = 0x02
-ERR_INVALID_DATA = 0x03
+def WindSense_payload():
+    speed = round(random.uniform(0.0, 50.0), 1)
+    gust = round(random.uniform(0.0, 70.0), 1)
+    direction = random.randint(0, 359)
+    turbulance = round(random.uniform(0.0, 1.0), 1)
+    return {"speed": f"{speed}m/s", "gust": f"{gust}m/s", "direction": f"{direction}°", "turbulance": f"{turbulance}"}
 
-DEVICE_TYPES = {
-    "ThermoNode": DEVICE_THERMONODE,
-    "WindSense": DEVICE_WINDSENSE,
-    "RainDetect": DEVICE_RAINDETECT,
-    "AirQualityBox": DEVICE_AIRQUALITY
+def RainDetect_payload():
+    rainfall = round(random.uniform(0.0, 500.0), 1)
+    soil = round(random.uniform(0.0, 100.0), 1)
+    flood = random.randint(0, 3)
+    duration = random.randint(0, 60)
+    return {"rainfall": f"{rainfall}mm", "soil": f"{soil}%", "flood": str(flood), "duration": str(duration)}
+
+def AirQualityBox_payload():
+    CO2 = random.randint(300, 5000)
+    ozone = round(random.uniform(0.0, 500.0), 1)
+    quality = random.randint(0, 500)
+    return {"CO2": f"{CO2}ppm", "ozone": f"{ozone}µg/m³", "quality": f"{quality}AQI"}
+
+SENSOR_FUNCS = {
+    "1": ("ThermoNode", ThermoNode_payload),
+    "2": ("WindSense", WindSense_payload),
+    "3": ("RainDetect", RainDetect_payload),
+    "4": ("AirQualityBox", AirQualityBox_payload),
 }
 
+def choose_sensor(c):
+    return SENSOR_FUNCS.get(c)
 
-def make_header(msg_type, device_type, flags=0):
-    """Create common 5-byte header"""
-    byte0 = (msg_type << 6) | (device_type << 4) | (flags & 0x0F)
-    timestamp = int(time.time())
-    return struct.pack('!BI', byte0, timestamp)
+def send_and_wait(sock, addr, obj, timeout=TIMEOUT, max_retries=3, corrupt_first=False):
+    created_local_sock = False
+    if sock is None:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        created_local_sock = True
 
+    try:
+        for attempt in range(1, max_retries + 1):
+            try:
+                # Encode message to binary
+                binary_msg = encode_message(obj)
 
-def make_register(device_type):
-    """Create REGISTER message (5 bytes)"""
-    return make_header(MSG_REGISTER, device_type)
+                if corrupt_first and attempt == 1:
+                    # Corrupt the checksum (last 4 bytes)
+                    binary_msg = binary_msg[:-4] + bytes([(binary_msg[-4] ^ 0xFF)]) + binary_msg[-3:]
 
+                sock.sendto(binary_msg, addr)
+            except Exception as e:
+                print(f"Send error (attempt {attempt}):", e)
+                if attempt >= max_retries:
+                    return None
+                time.sleep(0.1)
+                continue
 
-def make_pong(device_type, token):
-    """Create PONG message (9 bytes)"""
-    header = make_header(MSG_CONTROL, device_type, CTRL_PONG)
-    return header + struct.pack('!I', token)
+            sock.settimeout(timeout)
+            try:
+                data, _ = sock.recvfrom(65536)
+                resp = decode_message(data)
+            except socket.timeout:
+                resp = None
+            except Exception as e:
+                print("Recv error:", e)
+                return None
 
+            if resp is None:
+                if attempt < max_retries:
+                    time.sleep(0.1)
+                    continue
+                else:
+                    return None
 
-def encode_device_data(device_type, data):
-    """Encode device-specific data into binary format"""
-    if device_type == DEVICE_THERMONODE:
-        # temperature, humidity, dew_point, pressure
-        temp = int(data["temperature"] * 10)
-        hum = int(data["humidity"] * 10)
-        dew = int(data["dew_point"] * 10)
-        press = int(data["pressure"] * 100 - 80000)
-        return struct.pack('!hHhH', temp, hum, dew, press)
-    elif device_type == DEVICE_WINDSENSE:
-        # wind_speed, wind_gust, wind_direction, turbulence
-        speed = int(data["wind_speed"] * 10)
-        gust = int(data["wind_gust"] * 10)
-        direction = int(data["wind_direction"])
-        turb = int(data["turbulence"] * 10)
-        return struct.pack('!HHHB', speed, gust, direction, turb)
-    elif device_type == DEVICE_RAINDETECT:
-        # rainfall, soil_moisture, flood_risk, rain_duration
-        rain = int(data["rainfall"] * 10)
-        moist = int(data["soil_moisture"] * 10)
-        risk = int(data["flood_risk"])
-        duration = int(data["rain_duration"])
-        return struct.pack('!HHBH', rain, moist, risk, duration)
-    elif device_type == DEVICE_AIRQUALITY:
-        # co2, ozone, air_quality_index
-        co2 = int(data["co2"])
-        ozone = int(data["ozone"] * 10)
-        aqi = int(data["air_quality_index"])
-        return struct.pack('!HHH', co2, ozone, aqi)
-    return b''
+            if not verify_checksum_client(resp):
+                print(f"Odpoveď servera obsahuje chybný alebo chýbajúci checksum (pokus {attempt}). Opakujem pokus")
+                if attempt < max_retries:
+                    time.sleep(0.1)
+                    continue
+                else:
+                    return None
 
+            if resp.get("type") == "checksum_error":
+                print(f"Odozva servera: checksum_error (pokus {attempt}). Opätovné odoslanie")
+                if attempt < max_retries:
+                    time.sleep(0.1)
+                    continue
+                else:
+                    return resp
 
-def make_data(device_type, token, data, battery_low=False, corrupt_crc=False):
-    """Create DATA message (variable size)"""
-    flags = 0x01 if battery_low else 0x00
-    header = make_header(MSG_DATA, device_type, flags)
-    token_bytes = struct.pack('!I', token)
-    payload = encode_device_data(device_type, data)
-
-    # Calculate CRC over header + token + payload
-    message_without_crc = header + token_bytes + payload
-    crc = zlib.crc32(message_without_crc)
-
-    if corrupt_crc:
-        crc = crc ^ 0xFF  # Corrupt the CRC
-
-    crc_bytes = struct.pack('!I', crc)
-    return message_without_crc + crc_bytes
-
-
-def parse_header(data):
-    """Parse common header"""
-    if len(data) < 5:
+            return resp
         return None
-    byte0, timestamp = struct.unpack('!BI', data[:5])
-    msg_type = (byte0 >> 6) & 0x03
-    device_type = (byte0 >> 4) & 0x03
-    flags = byte0 & 0x0F
-    return msg_type, device_type, flags, timestamp
+    finally:
+        if created_local_sock:
+            sock.close()
 
+def send_and_wait_until_ack(sock, addr, obj, stop_event=None, timeout=TIMEOUT, retry_interval=0.2):
+    if sock is None:
+        raise ValueError("send_and_wait_until_ack: sock must be provided")
+    base_obj = obj.copy()
+    while True:
+        if stop_event and stop_event.is_set():
+            return None
+        try:
+            binary_msg = encode_message(base_obj)
+            try:
+                sock.sendto(binary_msg, addr)
+            except Exception as e:
+                print("Chyba pri odosielaní:", e)
+                if stop_event and stop_event.is_set():
+                    return None
+                time.sleep(retry_interval)
+                continue
+        except Exception as e:
+            print("Chyba pri vytváraní správy:", e)
+            return None
+        try:
+            sock.settimeout(timeout)
+            data, _ = sock.recvfrom(65536)
+            resp = decode_message(data)
+        except socket.timeout:
+            resp = None
+        except Exception as e:
+            print("Recv error while waiting for ack:", e)
+            resp = None
 
-class SimpleSensor(asyncio.DatagramProtocol):
-    def __init__(self, device_name):
-        self.device_name = device_name
-        self.device_type = DEVICE_TYPES[device_name]
-        self.token = None
-        self.transport = None
-        self.running = True
-        self.uat4_active = True
-        self.uat4_ping_delay = 0
-        self.uat4_completed = asyncio.Event()
-        self.uat3_corrupt_next = False
-        self.uat3_completed = asyncio.Event()
-        self.uat5_waiting_ack = False
-        self.uat5_ack_timer = None
-        self.uat5_last_msg = None
-        self.data_loop_task = None
+        if resp is None:
+            time.sleep(retry_interval)
+            continue
 
-    def connection_made(self, transport):
-        self.transport = transport
-        # Send REGISTER
-        msg = make_register(self.device_type)
-        self.transport.sendto(msg, (SERVER_IP, SERVER_PORT))
+        if not verify_checksum_client(resp):
+            print("„Odpoveď servera obsahuje chybný alebo chýbajúci checksum. Opätovné odoslanie")
+            time.sleep(retry_interval)
+            continue
 
-    def datagram_received(self, data, addr):
-        if len(data) < 5:
-            return
+        rtype = resp.get("type")
+        if rtype == "ack":
+            return resp
+        if rtype == "checksum_error":
+            print("Server poslal odpoveď checksum_error — opätovne odosielanie správu")
+            time.sleep(retry_interval)
+            continue
+        if rtype in ("invalid_token", "error"):
+            print("Server odpovedal s chybou:", resp)
+            return resp
+        print("Od servera prišla ne-ACK odpoveď (ignorované):", resp)
+        time.sleep(retry_interval)
+        continue
 
-        header = parse_header(data)
-        if not header:
-            return
-
-        msg_type, device_type, flags, timestamp = header
-
-        if msg_type == MSG_REGISTER_ACK:
-            # Extract token
-            if len(data) >= 9:
-                self.token = struct.unpack('!I', data[5:9])[0]
-                if self.data_loop_task is None or self.data_loop_task.done():
-                    self.data_loop_task = asyncio.create_task(self.data_loop())
-
-        elif msg_type == MSG_CONTROL:
-            ctrl_type = flags & 0x0F
-
-            if ctrl_type == CTRL_DATA_ACK:
-                # SILENT - no print for ACKs during automatic generation
-                self.uat5_waiting_ack = False
-                if self.uat5_ack_timer:
-                    self.uat5_ack_timer.cancel()
-                    self.uat5_ack_timer = None
-
-            elif ctrl_type == CTRL_PING:
-                if self.uat4_ping_delay > 0:
-                    print(f"[UAT4] {self.device_name}: Prijatý ping #{3 - self.uat4_ping_delay}, ignorujem...")
-                    self.uat4_ping_delay -= 1
-                else:
-                    print(f"[UAT4] {self.device_name}: Prijatý ping, odpovedám PONG...")
-                    pong = make_pong(self.device_type, self.token)
-                    self.transport.sendto(pong, (SERVER_IP, SERVER_PORT))
-                    if not self.uat4_active:
-                        self.uat4_active = True
-                        print(f"[UAT4] {self.device_name}: OBNOVENÉ automatické odosielanie!")
-                        self.uat4_completed.set()
-
-            elif ctrl_type == CTRL_ERROR:
-                if len(data) >= 6:
-                    error_code = struct.unpack('!B', data[5:6])[0]
-                    if error_code == ERR_CRC_FAIL:
-                        print(f"[UAT3] {self.device_name}: Server detekoval CRC chybu, posielam znova...")
-                        if self.uat5_last_msg:
-                            # Resend without corruption
-                            self.transport.sendto(self.uat5_last_msg, (SERVER_IP, SERVER_PORT))
-                            self.uat3_completed.set()
-
-    def error_received(self, exc):
-        if isinstance(exc, OSError):
-            pass
-        else:
-            print(f"[ERROR] {self.device_name} protocol error: {exc}")
-
-    async def data_loop(self):
-        await asyncio.sleep(1)
-
-        while self.running:
-            if not self.transport or self.transport.is_closing():
+def ping_listener(listen_sock, sensor_name, token, ping_counter, resume_event, stop_event):
+    listen_sock.settimeout(1.0)
+    try:
+        while not stop_event.is_set() and not resume_event.is_set():
+            try:
+                data, addr = listen_sock.recvfrom(65536)
+            except socket.timeout:
+                continue
+            except Exception:
                 break
+            try:
+                msg = decode_message(data)
+            except Exception:
+                continue
 
-            if self.uat4_active:
-                # Generate random data based on device type
-                if self.device_name == "ThermoNode":
-                    data = {
-                        "temperature": round(random.uniform(20, 30), 1),
-                        "humidity": round(random.uniform(40, 80), 1),
-                        "dew_point": round(random.uniform(10, 20), 1),
-                        "pressure": round(random.uniform(1000, 1020), 2)
-                    }
-                elif self.device_name == "WindSense":
-                    data = {
-                        "wind_speed": round(random.uniform(0, 20), 1),
-                        "wind_gust": round(random.uniform(0, 30), 1),
-                        "wind_direction": random.randint(0, 359),
-                        "turbulence": round(random.uniform(0, 1), 1)
-                    }
-                elif self.device_name == "RainDetect":
-                    data = {
-                        "rainfall": round(random.uniform(0, 20), 1),
-                        "soil_moisture": round(random.uniform(0, 100), 1),
-                        "flood_risk": random.randint(0, 3),
-                        "rain_duration": random.randint(0, 60)
-                    }
-                else:  # AirQualityBox
-                    data = {
-                        "co2": random.randint(400, 1000),
-                        "ozone": round(random.uniform(0, 200), 1),
-                        "air_quality_index": random.randint(0, 200)
-                    }
+            if msg.get("type") == "ping" and msg.get("token") == token:
+                ping_counter['count'] += 1
+                current_count = ping_counter['count']
+                print(f"{sensor_name}: Ping #{current_count} prijaté zo servera")
 
-                corrupt = self.uat3_corrupt_next
-                if corrupt:
-                    print(f"[UAT3] {self.device_name}: Zavádzam CRC chybu do ďalšej správy...")
-                    self.uat3_corrupt_next = False
+                if current_count >= 3:
+                    print(f"{sensor_name}: Prijaté 3 pingy, reštart a odoslanie odpovede")
+                    resp = {
+                        "type": "ping_response",
+                        "token": token,
+                        "timestamp": now_unix(),
+                        "device_type": sensor_name
+                    }
+                    binary_resp = encode_message(resp)
+                    try:
+                        listen_sock.sendto(binary_resp, addr)
+                    except Exception:
+                        pass
 
-                msg = make_data(self.device_type, self.token, data, corrupt_crc=corrupt)
-
-                # For UAT3, we need to save the clean version for resend
-                if corrupt:
-                    self.uat5_last_msg = make_data(self.device_type, self.token, data, corrupt_crc=False)
+                    resume_event.set()
+                    break
                 else:
-                    self.uat5_last_msg = msg
+                    print(f"{sensor_name}: Ešte neodpovedám, čakáme na 3. ping ({current_count}/3)")
+    finally:
+        return
 
-                self.transport.sendto(msg, (SERVER_IP, SERVER_PORT))
+def _pretty_print_payload_as_lines(sensor_name, payload, timestamp):
+    print(f"INFO: @{sensor_name} CORRUPTED DATA at @{timestamp}. REQUESTING DATA")
+    print(f"@{timestamp} @{sensor_name}")
+    if isinstance(payload, dict):
+        parts = []
+        for k, v in payload.items():
+            parts.append(f"{k}: {v}")
+        print("; ".join(parts) + ";")
+    else:
+        print(str(payload))
+    print("")
 
-                self.uat5_waiting_ack = True
-                if self.uat5_ack_timer:
-                    self.uat5_ack_timer.cancel()
-                self.uat5_ack_timer = asyncio.create_task(self.uat5_wait_for_ack())
+def background_sender(server_addr, sensor_name, sensor_func, token, stop_event, mode='1', custom_payload=None, pause_event=None, resume_event=None):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        while not stop_event.is_set():
+            if pause_event and pause_event.is_set():
+                ping_counter = {'count': 0}
+                ping_thread = threading.Thread(
+                    target=ping_listener,
+                    args=(sock, sensor_name, token, ping_counter, resume_event, stop_event),
+                    daemon=True
+                )
+                ping_thread.start()
 
-            await asyncio.sleep(10)
+                print(f"{sensor_name}: Spúšťa sa sledovanie pingov, čakáme na 3. ping")
+                while not resume_event.is_set() and not stop_event.is_set():
+                    time.sleep(0.1)
+                if ping_thread.is_alive():
+                    ping_thread.join(timeout=2.0)
 
-    async def uat5_wait_for_ack(self):
-        await asyncio.sleep(1)
-        if self.uat5_waiting_ack:
-            print(f"[UAT5] {self.device_name}: Nedostal som ACK, posielam znova...")
-            self.transport.sendto(self.uat5_last_msg, (SERVER_IP, SERVER_PORT))
-            self.uat5_ack_timer = asyncio.create_task(self.uat5_wait_for_ack())
+                if resume_event.is_set():
+                    print(f"{sensor_name}: Pokračovanie v odosielaní dát")
+                    pause_event.clear()
+                    resume_event.clear()
+                    PAUSED_SENSORS[sensor_name] = False
+                continue
 
-    def uat2_send_manual_data(self, data, battery_low):
-        if not self.token:
-            print(f"CHYBA: {self.device_name} nie je zaregistrovaný!")
-            return
+            try:
+                if SIMULATE_ERROR_SENSORS.get(sensor_name):
+                    SIMULATE_ERROR_SENSORS[sensor_name] = False
+                    print(f"{sensor_name}: Hibaszimuláció — a következő autosend körben csak a hibás üzenetet küldi (nem küld normál üzenetet ezen a körön).")
 
-        msg = make_data(self.device_type, self.token, data, battery_low=battery_low)
-        self.transport.sendto(msg, (SERVER_IP, SERVER_PORT))
-        print(f"Vlastná správa odoslaná pre {self.device_name}")
-        if battery_low:
-            print(f"(s upozornením na slabú batériu)")
+                    payload = sensor_func()
+                    timestamp = now_unix()
+                    data_msg = {
+                        "type": "data",
+                        "device_type": sensor_name,
+                        "timestamp": timestamp,
+                        "low_battery": False,
+                        "token": token,
+                        "payload": payload
+                    }
 
-        self.uat5_last_msg = msg
-        self.uat5_waiting_ack = True
-        if self.uat5_ack_timer:
-            self.uat5_ack_timer.cancel()
-        self.uat5_ack_timer = asyncio.create_task(self.uat5_wait_for_ack())
+                    _pretty_print_payload_as_lines(sensor_name, payload, timestamp)
 
-    def uat3_introduce_error(self):
-        self.uat3_corrupt_next = True
-        print(f" {self.device_name} pokazí CRC pri ďalšom automatickom odoslaní")
+                    resp = send_and_wait(sock, server_addr, data_msg, max_retries=1, corrupt_first=True)
+                    if resp is None:
+                        print(f"{sensor_name}: Žiadna odpoveď zo servera na chybné správy")
+                        pass
+                    else:
+                        if resp.get("type") == "checksum_error":
+                            print(f"{sensor_name}: Server vrátil checksum_error — okamžitá opätovná odosielka správnej správy")
+                            resp2 = send_and_wait(sock, server_addr, data_msg, max_retries=3, corrupt_first=False)
+                            if resp2 is None:
+                                print(f"{sensor_name}: Žiadna odpoveď na správnu správu")
+                            else:
+                                print(f"{sensor_name}: Odpoveď na správnu správu: {resp2}")
+                        else:
+                            print(f"{sensor_name}: Odpoveď na chybnú správu (neočakávané): {resp}")
+                    total = 10.0
+                    step = 0.1
+                    slept = 0.0
+                    while slept < total and not stop_event.is_set():
+                        time.sleep(step)
+                        slept += step
+                    continue
+            except Exception as e:
+                print(f"{sensor_name}: Chyba pri vykonávaní hibovej simulácie: {e}")
 
-    def uat4_simulate_disconnect(self):
-        self.uat4_active = False
-        self.uat4_ping_delay = 2
-        print(f"{self.device_name} zastavený (ignoruje 2 pingy, odpovie na 3.)")
+            if mode == '1':
+                payload = sensor_func()
+                data_msg = {
+                    "type": "data",
+                    "device_type": sensor_name,
+                    "timestamp": now_unix(),
+                    "low_battery": False,
+                    "token": token,
+                    "payload": payload
+                }
+                resp = send_and_wait_until_ack(sock, server_addr, data_msg, stop_event=stop_event)
+            elif mode == '2':
+                payload = custom_payload
+                data_msg = {
+                    "type": "data",
+                    "device_type": sensor_name,
+                    "timestamp": now_unix(),
+                    "low_battery": False,
+                    "token": token,
+                    "payload": payload
+                }
+                resp = send_and_wait_until_ack(sock, server_addr, data_msg, stop_event=stop_event)
+            elif mode == '3':
+                payload = sensor_func()
+                data_msg = {
+                    "type": "data",
+                    "device_type": sensor_name,
+                    "timestamp": now_unix(),
+                    "low_battery": False,
+                    "token": token,
+                    "payload": payload
+                }
+                resp = send_and_wait(sock, server_addr, data_msg, max_retries=1, corrupt_first=True)
+                if resp is None:
+                    print(f"{sensor_name}: Žiadna odpoveď zo servera na chybné správy")
+                elif resp.get("type") == "checksum_error":
+                    print(f"{sensor_name}: Server checksum_error – odosielanie správnu správu")
+                    resp2 = send_and_wait(sock, server_addr, data_msg, max_retries=3, corrupt_first=False)
+                    if resp2 is None:
+                        print(f"{sensor_name}: Žiadna odpoveď na správnu správu")
+                    else:
+                        print(f"{sensor_name}: Odpoveď na správnu správu: {resp2}")
+                else:
+                    print(f"{sensor_name}: Neočakávaná odpoveď na chybnú správu: {resp}")
+                return
+            else:
+                payload = sensor_func()
+                data_msg = {
+                    "type": "data",
+                    "device_type": sensor_name,
+                    "timestamp": now_unix(),
+                    "low_battery": False,
+                    "token": token,
+                    "payload": payload
+                }
+                resp = send_and_wait_until_ack(sock, server_addr, data_msg, stop_event=stop_event)
 
-    def stop(self):
-        self.running = False
-        if self.uat5_ack_timer and not self.uat5_ack_timer.done():
-            self.uat5_ack_timer.cancel()
-        if self.data_loop_task and not self.data_loop_task.done():
-            self.data_loop_task.cancel()
+            if resp is None:
+                if stop_event.is_set():
+                    break
+            elif resp.get("type") == "checksum_error":
+                print(f"{sensor_name}: Normál küldésre érkezett checksum_error: {resp}")
 
+            total = 10.0
+            step = 0.1
+            slept = 0.0
+            while slept < total and not stop_event.is_set():
+                time.sleep(step)
+                slept += step
 
-async def ainput(prompt: str = "") -> str:
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, input, prompt)
+    except Exception as e:
+        print(f"Chyba background sendera ({sensor_name}):", e)
+    finally:
+        sock.close()
 
+def register_device(server_addr, sensor_name):
+    reg_msg = {"type": "register", "device_type": sensor_name, "timestamp": now_unix(), "low_battery": False,
+               "token": ""}
+    resp = send_and_wait(None, server_addr, reg_msg)
+    return resp
 
-def show_menu():
-    print("FIITMeteo Tester MENU (Binary Protocol)")
-    print("1) Nastaviť IP a port")
-    print("2) Spustiť automatické generovanie")
-    print("3) Zastaviť automatické generovanie")
-    print("4) Odoslať vlastnú správu")
-    print("5) Zaviesť chybu do dát")
-    print("6) Simulovať výpadok")
-    print("7) Ukončiť")
+def show_main_menu():
+    print("\n--- HLAVNÉ MENU ---")
+    print("1. automatické generovanie (VŠETKY 4 senzory na pozadí)")
+    print("2. vlastná správa (ručné, po poliach, jednorazové odoslanie)")
+    print("3. chyby do správy (simulácia chyby pri pozadí odosielaní)")
+    print("4. odpojenie senzora (vypnutie senzora)")
+    print("5. ukončiť")
+    choice = input("Vyber (1–5): ").strip()
+    return choice
 
+def choose_sensor_menu():
+    print("\nVyber senzor:")
+    print(" 1) ThermoNode")
+    print(" 2) WindSense")
+    print(" 3) RainDetect")
+    print(" 4) AirQualityBox")
+    s = input("Senzor (1-4): ").strip()
+    return s
 
-async def main():
-    global SERVER_IP, SERVER_PORT
+def ask_battery_status():
+    while True:
+        response = input("Má sen nízku úroveň batérie? (a/n): ").strip().lower()
+        if response in ('a', 'ano', 'y', 'yes'):
+            return True
+        elif response in ('n', 'nie', 'no'):
+            return False
+        else:
+            print("Neplatná odpoveď. Prosím, odpovedz znakom 'a' (áno) alebo 'n' (nie).")
 
-    sensors = {}
-    transports = {}
-    loop = asyncio.get_event_loop()
+REQUIRED_FIELDS = {
+    "ThermoNode": [
+        ("temp", -50.0, 60.0, "°C", False),
+        ("hum", 0.0, 100.0, "%", False),
+        ("dew", -50.0, 60.0, "°C", False),
+        ("pressure", 800.0, 1100.0, "hPa", False),
+    ],
+    "WindSense": [
+        ("speed", 0.0, 50.0, "m/s", False),
+        ("gust", 0.0, 70.0, "m/s", False),
+        ("direction", 0, 359, "°", True),
+        ("turbulance", 0.0, 1.0, "", False),
+    ],
+    "RainDetect": [
+        ("rainfall", 0.0, 500.0, "mm", False),
+        ("soil", 0.0, 100.0, "%", False),
+        ("flood", 0, 3, "", True),
+        ("duration", 0, 60, "s", True),
+    ],
+    "AirQualityBox": [
+        ("CO2", 300, 5000, "ppm", True),
+        ("ozone", 0.0, 500.0, "µg/m³", False),
+        ("quality", 0, 500, "AQI", True),
+    ],
+}
 
-    print("FIITMeteo Tester (Binary Protocol)")
+def prompt_numeric(field_name, minv, maxv, unit, is_int):
+    range_text = f"({minv} .. {maxv})"
+    unit_text = f" {unit}" if unit else ""
+    prompt = f"Zadaj hodnotu pre {field_name} {range_text}{unit_text}: "
+    while True:
+        s = input(prompt).strip()
+        if s == "":
+            print("Prázdny vstup — zadaj číslo")
+            continue
+        s_norm = s.replace(",", ".")
+        try:
+            if is_int:
+                if "." in s_norm:
+                    print("Je potrebné celé číslo (napr. 5). Skús to znova")
+                    continue
+                val = int(s_norm)
+            else:
+                val = float(s_norm)
+        except Exception:
+            print("Neplatný formát čísla — skús znova (napr. 23.4)")
+            continue
+        if val < minv or val > maxv:
+            print(f"Hodnota je mimo rozsah {minv} .. {maxv}. Skús znova")
+            continue
+        return val
+
+def collect_structured_payload(sensor_name):
+    fields = REQUIRED_FIELDS.get(sensor_name)
+    if not fields:
+        print("Nie je definované pole pre tento senzor — payload bude prázdny")
+        return {}
+    payload = {}
+    print(f"\nRučné zadávanie dát pre senzor {sensor_name}. Zadaj nasledujúce polia v predpísanom intervale")
+    for fname, minv, maxv, unit, is_int in fields:
+        val = prompt_numeric(fname, minv, maxv, unit, is_int)
+        if fname == "pressure":
+            val_str = f"{round(float(val), 2)}{unit}" if unit else f"{round(float(val), 2)}"
+            payload[fname] = val_str
+        elif is_int:
+            if unit == "":
+                payload[fname] = str(int(val))
+            else:
+                payload[fname] = f"{int(val)}{unit}"
+        else:
+            val_rounded = round(float(val), 1)
+            if unit:
+                payload[fname] = f"{val_rounded}{unit}"
+            else:
+                payload[fname] = val_rounded
+    print("Vstup dokončený:", payload)
+    return payload
+
+def send_one_data(server_addr, sensor_name, token, payload, low_battery=False):
+    data_msg = {
+        "type": "data",
+        "device_type": sensor_name,
+        "timestamp": now_unix(),
+        "low_battery": low_battery,
+        "token": token,
+        "payload": payload
+    }
+    print(f"\n>>> ODOSIELANIE NA SERVER: {sensor_name}")
+    print(f">>> ÚDAJE: {payload}")
+    if low_battery:
+        print(">>> UPOZORNENIE: NÍZKA BATÉRIA!")
+
+    resp = send_and_wait(None, server_addr, data_msg)
+
+    if resp is None:
+        print(">>> CHYBA: Žiadna odpoveď od servera")
+    else:
+        print(f">>> ODPOVEĎ SERVERA: {resp}")
+
+    return resp
+
+BACKGROUND_STATE = {
+    'active': False,
+    'threads': [],
+    'stop_event': None,
+    'pause_events': {},
+    'resume_events': {},
+    'sensor_data': []
+}
+
+def start_background_senders(server_addr, active_sensors):
+    stop_event = threading.Event()
+    pause_events = {}
+    resume_events = {}
+    sender_threads = []
+    for sensor_name, sensor_func, token in active_sensors:
+        pause_event = threading.Event()
+        resume_event = threading.Event()
+        pause_events[sensor_name] = pause_event
+        resume_events[sensor_name] = resume_event
+        thread = threading.Thread(
+            target=background_sender,
+            args=(server_addr, sensor_name, sensor_func, token, stop_event, '1', None, pause_event, resume_event),
+            daemon=True,
+            name=f"Thread-{sensor_name}"
+        )
+        thread.start()
+        sender_threads.append(thread)
+        print(f"{sensor_name} Odosielanie na pozadí spustené v samostatnom vlákne")
+    print(f"\nCelkovo {len(sender_threads)} vlákno spustené:")
+    for i, thread in enumerate(sender_threads):
+        print(f"  {i + 1}. {thread.name} - Aktívny: {thread.is_alive()}")
+    return stop_event, pause_events, resume_events, sender_threads
+
+def main():
+    global IP, PORT, TOKENS, BACKGROUND_STATE, SIMULATE_ERROR_SENSORS
+
+    print("Enter server IP:")
+    IP = input().strip()
+    print("Enter server port:")
+    try:
+        PORT = int(input().strip())
+    except:
+        print("Invalid port")
+
+    server_addr = (IP, PORT)
 
     while True:
-        show_menu()
+        menu_choice = show_main_menu()
 
-        choice = await ainput("Voľba: ")
+        if menu_choice not in ("1", "2", "3", "4","5"):
+            print("Neplatná položka menu")
+            continue
 
-        if choice == "1":
-            if sensors:
-                print("Najprv zastavte senzory (voľba 3)")
-            else:
-                SERVER_IP = await ainput(f"IP servera (default {SERVER_IP}): ") or SERVER_IP
-                port_input = await ainput(f"Port servera (default {SERVER_PORT}): ")
-                SERVER_PORT = int(port_input) if port_input else SERVER_PORT
-                print(f"Nastavené: {SERVER_IP}:{SERVER_PORT}")
-
-        elif choice == "2":
-            if sensors:
-                print("Senzory už bežia!")
-            else:
-                print(f"\n→ Pripájam sa na server {SERVER_IP}:{SERVER_PORT}...")
-
-                for name in ["ThermoNode", "WindSense", "RainDetect", "AirQualityBox"]:
-                    transport, protocol = await loop.create_datagram_endpoint(
-                        lambda n=name: SimpleSensor(n),
-                        remote_addr=(SERVER_IP, SERVER_PORT)
-                    )
-                    sensors[name] = protocol
-                    transports[name] = transport
-
-                await asyncio.sleep(2)
-
-                registered_count = sum(1 for s in sensors.values() if s.token is not None)
-                active_tasks = sum(1 for s in sensors.values() if s.data_loop_task and not s.data_loop_task.done())
-
-                if registered_count == 4 and active_tasks == 4:
-                    print("Všetky senzory zaregistrované a bežia!")
-                    print("Automatické generovanie ZAPNUTÉ (tiché - bez výpisov)")
-                    print("Dáta sa posielajú každých 10 sekúnd na pozadí")
-                    print("Použite voľbu 3 na zastavenie alebo 4-6 pre UAT testy")
-                else:
-                    print(f"Registrácia problematická: {registered_count}/4 senzorov, {active_tasks}/4 taskov")
-                    print("Skúste zastaviť (3) a spustiť znova (2)")
-
-        elif choice == "3":
-            if sensors:
-                print("→ Zastavujem všetky senzory...")
-
-                for sensor in sensors.values():
-                    sensor.stop()
-
-                await asyncio.sleep(1.5)
-
-                for transport in transports.values():
-                    transport.close()
-
-                sensors.clear()
-                transports.clear()
-
-                print("Všetky senzory zastavené a odpojené")
-                print("Môžete ich znova spustiť voľbou 2")
-            else:
-                print("Žiadne senzory nebežia!")
-
-        elif choice == "4":
-            if not sensors:
-                print("Najprv spustite automatické generovanie (voľba 2)!")
-                continue
-
-            print("\nDostupné senzory:")
-            sensor_list = list(sensors.keys())
-            for i, name in enumerate(sensor_list, 1):
-                print(f"  {i}) {name}")
-
-            sel_input = await ainput("Vyberte senzor (číslo): ")
-            try:
-                sel = int(sel_input)
-                if 1 <= sel <= len(sensor_list):
-                    selected_sensor = sensors[sensor_list[sel - 1]]
-
-                    # Get parameter ranges
-                    params = {
-                        "ThermoNode": {
-                            "temperature": (-50.0, 60.0, 1),
-                            "humidity": (0.0, 100.0, 1),
-                            "dew_point": (-50.0, 60.0, 1),
-                            "pressure": (800.0, 1100.0, 2)
-                        },
-                        "WindSense": {
-                            "wind_speed": (0.0, 50.0, 1),
-                            "wind_gust": (0.0, 70.0, 1),
-                            "wind_direction": (0, 359, 0),
-                            "turbulence": (0.0, 1.0, 1)
-                        },
-                        "RainDetect": {
-                            "rainfall": (0.0, 500.0, 1),
-                            "soil_moisture": (0.0, 100.0, 1),
-                            "flood_risk": (0, 3, 0),
-                            "rain_duration": (0, 60, 0)
-                        },
-                        "AirQualityBox": {
-                            "co2": (300, 5000, 0),
-                            "ozone": (0.0, 500.0, 1),
-                            "air_quality_index": (0, 500, 0)
-                        }
-                    }
-
-                    battery_input = await ainput("Oznámiť serveru slabú batériu? (a/n): ")
-                    battery_low = (battery_input.strip().lower() == 'a')
-
-                    device_params = params[sensor_list[sel - 1]]
-                    data = {}
-
-                    print(f"\nZadajte hodnoty pre {sensor_list[sel - 1]}:")
-                    for param_name, (min_val, max_val, decimals) in device_params.items():
-                        while True:
-                            try:
-                                value_str = await ainput(f"  {param_name} ({min_val} - {max_val}): ")
-                                if decimals == 0:
-                                    value = int(float(value_str))
-                                else:
-                                    value = round(float(value_str), decimals)
-
-                                if min_val <= value <= max_val:
-                                    data[param_name] = value
-                                    break
-                                else:
-                                    print(f"    Mimo rozsahu! Musí byť medzi {min_val} a {max_val}")
-                            except ValueError:
-                                print("    Neplatné číslo!")
-
-                    selected_sensor.uat2_send_manual_data(data, battery_low)
-                else:
-                    print("Neplatný výber!")
-            except ValueError:
-                print("Zadajte číslo!")
-
-        elif choice == "5":
-            if not sensors:
-                print("Najprv spustite automatické generovanie (voľba 2)!")
-                continue
-
-            print("\nDostupné senzory:")
-            sensor_list = list(sensors.keys())
-            for i, name in enumerate(sensor_list, 1):
-                print(f"  {i}) {name}")
-
-            sel_input = await ainput("Vyberte senzor (číslo): ")
-            try:
-                sel = int(sel_input)
-                if 1 <= sel <= len(sensor_list):
-                    selected_sensor = sensors[sensor_list[sel - 1]]
-                    selected_sensor.uat3_introduce_error()
-
-                    print("Čakám na ďalšie automatické odoslanie a detekciu chyby...")
-                    try:
-                        await asyncio.wait_for(selected_sensor.uat3_completed.wait(), timeout=15)
-                        print("Test dokončený!\n")
-                    except asyncio.TimeoutError:
-                        print("Timeout - test nebol dokončený\n")
-                    selected_sensor.uat3_completed.clear()
-                else:
-                    print("Neplatný výber!")
-            except ValueError:
-                print("Zadajte číslo!")
-
-        elif choice == "6":
-            if not sensors:
-                print("Najprv spustite automatické generovanie (voľba 2)!")
-                continue
-
-            print("\nDostupné senzory:")
-            sensor_list = list(sensors.keys())
-            for i, name in enumerate(sensor_list, 1):
-                print(f"  {i}) {name}")
-
-            sel_input = await ainput("Vyberte senzor (číslo): ")
-            try:
-                sel = int(sel_input)
-                if 1 <= sel <= len(sensor_list):
-                    selected_sensor = sensors[sensor_list[sel - 1]]
-                    selected_sensor.uat4_simulate_disconnect()
-
-                    print("Čakám na disconnect, ping/pong cyklus a reconnect...")
-
-                    try:
-                        await asyncio.wait_for(selected_sensor.uat4_completed.wait(), timeout=40)
-                        print("Test dokončený!\n")
-                    except asyncio.TimeoutError:
-                        print("Timeout - test nebol dokončený\n")
-
-                    selected_sensor.uat4_completed.clear()
-                else:
-                    print("Neplatný výber!")
-            except ValueError:
-                print("Zadajte číslo!")
-
-        elif choice == "7":
-            print("→ Ukončujem...")
-
-            for sensor in sensors.values():
-                sensor.stop()
-
-            for transport in transports.values():
-                transport.close()
+        if menu_choice == "5":
+            print("Ukončenie")
+            if BACKGROUND_STATE['active']:
+                BACKGROUND_STATE['stop_event'].set()
+                for thread in BACKGROUND_STATE['threads']:
+                    thread.join(timeout=2.0)
             break
 
-        else:
-            if choice.strip():
-                print("Neplatná voľba!")
+        if menu_choice == "4":
+            have_any_token = any(bool(t) for t in TOKENS.values())
+            if not have_any_token:
+                print(
+                    "Nie je možné použiť možnosť 4: server ešte neposkytol token. Najprv použite možnosť 1 alebo zaregistrujte senzory")
+                continue
+            sensor_choice = choose_sensor_menu()
+            sel = choose_sensor(sensor_choice)
+            if sel is None:
+                print("Neplatná voľba senzora")
+                continue
+            sensor_name, _ = sel
+            token_for_sensor = TOKENS.get(sensor_name, "")
+            if not token_for_sensor:
+                print(f"{sensor_name}: Žiadny token, zastavenie nie je možné (žiadne odosielanie dát)")
+                continue
+            if not BACKGROUND_STATE['active']:
+                print(
+                    "Pozadie odosielanie ešte nebeží — spúšťam automatické odosielanie pre senzory, ktoré majú token")
 
+                active_sensors = []
+                for sname, sfunc in SENSOR_FUNCS.values():
+                    tok = TOKENS.get(sname, "")
+                    if tok:
+                        active_sensors.append((sname, sfunc, tok))
+                        PAUSED_SENSORS[sname] = False
+                    else:
+                        print(f"Upozornenie: {sname} Nemá token, nebude odosielať dáta")
+
+                if not active_sensors:
+                    print("Žiadny senzor nemá token. Návrat do menu")
+                    continue
+                stop_event, pause_events, resume_events, threads = start_background_senders(server_addr, active_sensors)
+                if sensor_name in pause_events:
+                    pause_events[sensor_name].set()
+                    PAUSED_SENSORS[sensor_name] = True
+                    print(f"{sensor_name} Zastavené — ostatné senzory stále odosielajú údaje")
+                else:
+                    print(f"{sensor_name} Nie je nájdený medzi spustenými senzormi")
+
+                BACKGROUND_STATE = {
+                    'active': True,
+                    'threads': threads,
+                    'stop_event': stop_event,
+                    'pause_events': pause_events,
+                    'resume_events': resume_events,
+                    'sensor_data': active_sensors
+                }
+                continue
+            if sensor_name not in BACKGROUND_STATE['pause_events']:
+                print(f"{sensor_name} Nie je nájdený medzi aktívnymi senzormi")
+                continue
+
+            print(f"{sensor_name} Zastavuje sa")
+            BACKGROUND_STATE['pause_events'][sensor_name].set()
+            PAUSED_SENSORS[sensor_name] = True
+            print(f"{sensor_name} Zastavené. Ostatné senzory pokračujú v odosielaní údajov")
+            continue
+
+        if menu_choice == "2":
+            sensor_choice = choose_sensor_menu()
+            sel = choose_sensor(sensor_choice)
+            if sel is None:
+                print("Neplatná voľba senzora, návrat do menu")
+                continue
+
+            sensor_name, sensor_func = sel
+            print(f"\n{sensor_name} Stav batérie:")
+            low_battery = ask_battery_status()
+            custom_payload = collect_structured_payload(sensor_name)
+
+            if not custom_payload:
+                print("Prázdny payload — návrat do hlavného menu")
+                continue
+
+            token = TOKENS.get(sensor_name, "")
+            if not token:
+                print("Nie je možné odoslať správu bez tokenu. Spusť možnosť 1 pre registráciu")
+                continue
+            battery_status = "nízke" if low_battery else "normalny"
+            print(f"Odoslanie (jednorazové): senzor={sensor_name}, batéria={battery_status}, payload={custom_payload}")
+            resp = send_one_data(server_addr, sensor_name, token, custom_payload, low_battery)
+
+            if resp is None:
+                print("Žiadna odpoveď zo servera na odoslanie")
+            else:
+                print("Odpoveď servera:", resp)
+            continue
+
+        if menu_choice == "1":
+            if BACKGROUND_STATE['active']:
+                print("Pozadie odosielanie už beží! Použi možnosť 4 na správu senzorov")
+                continue
+
+            print("\nRegistrovanie všetkých 4 senzorov")
+            for key, (sensor_name, sensor_func) in SENSOR_FUNCS.items():
+                resp = register_device(server_addr, sensor_name)
+                token = ""
+                if resp and verify_checksum_client(resp):
+                    token = resp.get("token") or ""
+                    if token:
+                        TOKENS[sensor_name] = token
+                        print(f"{sensor_name}: registrované Token: {token}")
+                    else:
+                        TOKENS[sensor_name] = ""
+                        print(f"{sensor_name}: Registrácia zlyhala alebo sme nedostali token. Odpoveď: {resp}")
+            print("Koniec registrácií. Všetky 4 senzory sa spúšťajú s automatickým odosielaním (ak dostali token)")
+            active_sensors = []
+            for sensor_name, sensor_func in SENSOR_FUNCS.values():
+                token = TOKENS.get(sensor_name, "")
+                if token:
+                    active_sensors.append((sensor_name, sensor_func, token))
+                    PAUSED_SENSORS[sensor_name] = False
+                else:
+                    print(f"Upozornenie: {sensor_name} Nezískal token, údaje neodosiela")
+
+            if not active_sensors:
+                print("Žiaden senzor nemá token. Späť do menu")
+                continue
+            print(f"\nSpustenie pozadia odosielania dát {len(active_sensors)} so senzorom:")
+            for sensor_name, _, token in active_sensors:
+                print(f" - {sensor_name}: {token}")
+            print("\nPozadie odosielania sa spustilo. Môžeš sa vrátiť do menu")
+            stop_event, pause_events, resume_events, sender_threads = start_background_senders(server_addr,active_sensors)
+
+            BACKGROUND_STATE = {
+                'active': True,
+                'threads': sender_threads,
+                'stop_event': stop_event,
+                'pause_events': pause_events,
+                'resume_events': resume_events,
+                'sensor_data': active_sensors
+            }
+
+            continue
+
+        if menu_choice == "3":
+            sensor_choice = choose_sensor_menu()
+            sel = choose_sensor(sensor_choice)
+            if sel is None:
+                print("Neplatná voľba senzora, návrat do menu")
+                continue
+
+            sensor_name, sensor_func = sel
+            token = TOKENS.get(sensor_name, "")
+
+            if not token:
+                print(f"{sensor_name}: Nie je token. Spusti možnosť 1 na registráciu")
+                continue
+            else:
+                print(f"{sensor_name} Token je už použitý: {token}")
+
+            if not BACKGROUND_STATE['active']:
+                print("\nPozadie odosielanie ešte nebeží — spúšťam automatické odosielanie pre senzory, ktoré majú token")
+
+                active_sensors = []
+                for sname, sfunc in SENSOR_FUNCS.values():
+                    tok = TOKENS.get(sname, "")
+                    if tok:
+                        active_sensors.append((sname, sfunc, tok))
+                        PAUSED_SENSORS[sname] = False
+                    else:
+                        print(f"Upozornenie: {sname} Nemá token, nebude odosielať dáta")
+
+                if not active_sensors:
+                    print("Žiadny senzor nemá token. Návrat do menu")
+                    continue
+
+                stop_event, pause_events, resume_events, threads = start_background_senders(server_addr, active_sensors)
+
+                BACKGROUND_STATE = {
+                    'active': True,
+                    'threads': threads,
+                    'stop_event': stop_event,
+                    'pause_events': pause_events,
+                    'resume_events': resume_events,
+                    'sensor_data': active_sensors
+                }
+
+            SIMULATE_ERROR_SENSORS[sensor_name] = True
+            print(f"{sensor_name}: Hibaszimuláció beállítva — a következő autosend körben csak a hibás üzenetet küldi; ha server checksum_error-t küld, azonnal visszaküldjük a helyes üzenetet.")
+            time.sleep(0.1)
+            print("Návrat do menu")
+            continue
+
+        print("Neplatná položka menu alebo zvolená možnosť nie je implementovaná")
+        continue
+    print("Koniec programu")
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n\nZastavené používateľom.")
+    main()
