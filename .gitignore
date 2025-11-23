@@ -1,2 +1,19 @@
 __pycache__/
 *.pyc
+
+# Compiled C++ binaries
+huffman_compress
+huffman_decompress
+scheduling
+scheduling_disjoint
+
+# Test files
+test.txt
+test_comp.txt
+test_uncomp.txt
+large_test.txt
+large_test_comp.txt
+large_test_uncomp.txt
+very_large_test.txt
+very_large_test_comp.txt
+very_large_test_uncomp.txt
