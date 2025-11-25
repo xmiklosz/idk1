@@ -7,6 +7,9 @@
 
 local fiitmeteo_proto = Proto("FIITMeteo", "FIITMeteo Binary Protocol")
 
+-- Compatibility: Support both bit32 (new) and bit (old) libraries
+local bit_lib = bit32 or bit
+
 -- Protocol fields
 local f_byte0 = ProtoField.uint8("fiitmeteo.byte0", "Byte 0", base.HEX)
 local f_msg_type = ProtoField.uint8("fiitmeteo.msg_type", "Message Type", base.DEC, {
@@ -113,17 +116,17 @@ local function crc32(data)
 
     for i = 0, bytes:len() - 1 do
         local byte = bytes:get_index(i)
-        crc = bit32.bxor(crc, byte)
+        crc = bit_lib.bxor(crc, byte)
         for j = 0, 7 do
-            if bit32.band(crc, 1) == 1 then
-                crc = bit32.bxor(bit32.rshift(crc, 1), 0xEDB88320)
+            if bit_lib.band(crc, 1) == 1 then
+                crc = bit_lib.bxor(bit_lib.rshift(crc, 1), 0xEDB88320)
             else
-                crc = bit32.rshift(crc, 1)
+                crc = bit_lib.rshift(crc, 1)
             end
         end
     end
 
-    return bit32.bxor(crc, 0xFFFFFFFF)
+    return bit_lib.bxor(crc, 0xFFFFFFFF)
 end
 
 function fiitmeteo_proto.dissector(buffer, pinfo, tree)
@@ -136,9 +139,9 @@ function fiitmeteo_proto.dissector(buffer, pinfo, tree)
 
     -- Parse header
     local byte0 = buffer(0, 1):uint()
-    local msg_type = bit32.rshift(bit32.band(byte0, 0xC0), 6)
-    local device_type = bit32.rshift(bit32.band(byte0, 0x30), 4)
-    local flags = bit32.band(byte0, 0x0F)
+    local msg_type = bit_lib.rshift(bit_lib.band(byte0, 0xC0), 6)
+    local device_type = bit_lib.rshift(bit_lib.band(byte0, 0x30), 4)
+    local flags = bit_lib.band(byte0, 0x0F)
     local timestamp = buffer(1, 4):uint()
 
     local device_name = device_names[device_type] or "Unknown"
@@ -177,7 +180,7 @@ function fiitmeteo_proto.dissector(buffer, pinfo, tree)
             subtree:add(f_token, buffer(5, 4))
 
             -- Battery low flag
-            local battery_low = bit32.band(flags, 0x01) == 1
+            local battery_low = bit_lib.band(flags, 0x01) == 1
             header_tree:add(f_battery_low, buffer(0, 1))
 
             -- Parse device-specific payload
@@ -266,7 +269,7 @@ function fiitmeteo_proto.dissector(buffer, pinfo, tree)
 
     elseif msg_type == 3 then
         -- CONTROL message
-        local ctrl_type = bit32.band(flags, 0x0F)
+        local ctrl_type = bit_lib.band(flags, 0x0F)
         local ctrl_name = ctrl_names[ctrl_type] or "Unknown"
 
         header_tree:add(f_ctrl_type, buffer(0, 1)):append_text(string.format(" (%s)", ctrl_name))
