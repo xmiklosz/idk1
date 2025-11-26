@@ -262,12 +262,9 @@ async def activity_checker(transport):
                     print(f"WARNING: {device_name} DISCONNECTED!")
                     ping = make_ping(device_type)
                     transport.sendto(ping, info["address"])
-                elif info["ping_attempts"] < 10:
-                    # Continue sending pings every 5 seconds, max 10 times
+                else:
+                    # Continue sending pings every 5 seconds indefinitely
                     info["ping_attempts"] += 1
-                    # Print DISCONNECTED for the 2nd ping attempt as well (to match UAT4 requirement)
-                    if info["ping_attempts"] == 2:
-                        print(f"WARNING: {device_name} DISCONNECTED!")
                     ping = make_ping(device_type)
                     transport.sendto(ping, info["address"])
 

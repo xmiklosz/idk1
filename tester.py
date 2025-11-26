@@ -130,12 +130,17 @@ class SimpleSensor(asyncio.DatagramProtocol):
         self.uat5_ack_timer = None
         self.uat5_last_msg = None
         self.data_loop_task = None
+        self.last_ack_time = time.time()
+        self.reconnect_task = None
 
     def connection_made(self, transport):
         self.transport = transport
         # Send REGISTER
         msg = make_register(self.device_type)
         self.transport.sendto(msg, (SERVER_IP, SERVER_PORT))
+        # Start reconnect watchdog
+        if self.reconnect_task is None or self.reconnect_task.done():
+            self.reconnect_task = asyncio.create_task(self.reconnect_watchdog())
 
     def datagram_received(self, data, addr):
         if len(data) < 5:
@@ -151,6 +156,7 @@ class SimpleSensor(asyncio.DatagramProtocol):
             # Extract token
             if len(data) >= 9:
                 self.token = struct.unpack('!I', data[5:9])[0]
+                self.last_ack_time = time.time()
                 if self.data_loop_task is None or self.data_loop_task.done():
                     self.data_loop_task = asyncio.create_task(self.data_loop())
 
@@ -160,18 +166,28 @@ class SimpleSensor(asyncio.DatagramProtocol):
             if ctrl_type == CTRL_DATA_ACK:
                 # SILENT - no print for ACKs during automatic generation
                 self.uat5_waiting_ack = False
+                self.last_ack_time = time.time()
                 if self.uat5_ack_timer:
                     self.uat5_ack_timer.cancel()
                     self.uat5_ack_timer = None
 
             elif ctrl_type == CTRL_PING:
+                # Update last communication time
+                self.last_ack_time = time.time()
+
                 if self.uat4_ping_delay > 0:
+                    # UAT4 test mode: ignore first 2 pings
                     print(f"[UAT4] {self.device_name}: Prijatý ping #{3 - self.uat4_ping_delay}, ignorujem...")
                     self.uat4_ping_delay -= 1
                 else:
-                    print(f"[UAT4] {self.device_name}: Prijatý ping, odpovedám PONG...")
-                    pong = make_pong(self.device_type, self.token)
-                    self.transport.sendto(pong, (SERVER_IP, SERVER_PORT))
+                    # Always respond to PINGs (both UAT4 and normal operation)
+                    if not self.uat4_active:
+                        print(f"[UAT4] {self.device_name}: Prijatý ping, odpovedám PONG...")
+
+                    if self.token:
+                        pong = make_pong(self.device_type, self.token)
+                        self.transport.sendto(pong, (SERVER_IP, SERVER_PORT))
+
                     if not self.uat4_active:
                         self.uat4_active = True
                         print(f"[UAT4] {self.device_name}: OBNOVENÉ automatické odosielanie!")
@@ -285,12 +301,34 @@ class SimpleSensor(asyncio.DatagramProtocol):
         self.uat4_ping_delay = 2
         print(f"{self.device_name} zastavený (ignoruje 2 pingy, odpovie na 3.)")
 
+    async def reconnect_watchdog(self):
+        """Monitor connection health and attempt re-registration if needed"""
+        await asyncio.sleep(5)  # Wait before starting monitoring
+
+        while self.running:
+            await asyncio.sleep(5)
+
+            if not self.transport or self.transport.is_closing():
+                break
+
+            # Check if we haven't received any response in 60 seconds
+            time_since_last_ack = time.time() - self.last_ack_time
+
+            # If we haven't heard from server in 60 seconds and we're registered
+            if time_since_last_ack > 60 and self.token:
+                # Try to re-register
+                msg = make_register(self.device_type)
+                self.transport.sendto(msg, (SERVER_IP, SERVER_PORT))
+                self.last_ack_time = time.time()  # Reset to avoid spam
+
     def stop(self):
         self.running = False
         if self.uat5_ack_timer and not self.uat5_ack_timer.done():
             self.uat5_ack_timer.cancel()
         if self.data_loop_task and not self.data_loop_task.done():
             self.data_loop_task.cancel()
+        if self.reconnect_task and not self.reconnect_task.done():
+            self.reconnect_task.cancel()
 
 
 async def ainput(prompt: str = "") -> str:
