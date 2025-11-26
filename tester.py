@@ -395,13 +395,33 @@ async def main():
             if sensors:
                 print("→ Zastavujem všetky senzory...")
 
+                # Stop all sensors
                 for sensor in sensors.values():
                     sensor.stop()
 
-                await asyncio.sleep(1.5)
+                # Wait for tasks to finish
+                await asyncio.sleep(0.5)
 
+                # Gather all tasks that need to be cancelled
+                all_tasks = []
+                for sensor in sensors.values():
+                    if sensor.data_loop_task and not sensor.data_loop_task.done():
+                        all_tasks.append(sensor.data_loop_task)
+                    if sensor.reconnect_task and not sensor.reconnect_task.done():
+                        all_tasks.append(sensor.reconnect_task)
+                    if sensor.uat5_ack_timer and not sensor.uat5_ack_timer.done():
+                        all_tasks.append(sensor.uat5_ack_timer)
+
+                # Wait for all tasks to complete
+                if all_tasks:
+                    await asyncio.gather(*all_tasks, return_exceptions=True)
+
+                # Close transports
                 for transport in transports.values():
                     transport.close()
+
+                # Wait a bit more to ensure cleanup
+                await asyncio.sleep(0.5)
 
                 sensors.clear()
                 transports.clear()
