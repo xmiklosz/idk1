@@ -370,20 +370,19 @@ async def main():
             else:
                 print(f"\n→ Pripájam sa na server {SERVER_IP}:{SERVER_PORT}...")
 
-                # Create sensors one by one using functools.partial to avoid closure issues
+                # Create each sensor instance directly - no factory function bullshit
                 for name in ["ThermoNode", "WindSense", "RainDetect", "AirQualityBox"]:
+                    sensor_instance = SimpleSensor(name)
                     transport, protocol = await loop.create_datagram_endpoint(
-                        partial(SimpleSensor, name),
+                        lambda s=sensor_instance: s,
                         remote_addr=(SERVER_IP, SERVER_PORT)
                     )
                     sensors[name] = protocol
                     transports[name] = transport
-
-                    # Small delay between sensor creations
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.2)
 
                 # Wait for registration
-                await asyncio.sleep(3)
+                await asyncio.sleep(2)
 
                 registered_count = sum(1 for s in sensors.values() if s.token is not None)
                 active_tasks = sum(1 for s in sensors.values() if s.data_loop_task and not s.data_loop_task.done())
