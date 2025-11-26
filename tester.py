@@ -3,6 +3,7 @@ import struct
 import time
 import zlib
 import random
+from functools import partial
 
 SERVER_IP = "127.0.0.1"
 SERVER_PORT = 9999
@@ -369,14 +370,10 @@ async def main():
             else:
                 print(f"\n→ Pripájam sa na server {SERVER_IP}:{SERVER_PORT}...")
 
-                # Create sensors one by one with proper factory functions
+                # Create sensors one by one using functools.partial to avoid closure issues
                 for name in ["ThermoNode", "WindSense", "RainDetect", "AirQualityBox"]:
-                    # Create a proper factory function to avoid closure issues
-                    def make_sensor(device_name=name):
-                        return SimpleSensor(device_name)
-
                     transport, protocol = await loop.create_datagram_endpoint(
-                        make_sensor,
+                        partial(SimpleSensor, name),
                         remote_addr=(SERVER_IP, SERVER_PORT)
                     )
                     sensors[name] = protocol
