@@ -370,14 +370,15 @@ async def main():
             else:
                 print(f"\n→ Pripájam sa na server {SERVER_IP}:{SERVER_PORT}...")
 
-                # Create each sensor instance directly - no factory function bullshit
+                # Create each sensor instance directly and store it
                 for name in ["ThermoNode", "WindSense", "RainDetect", "AirQualityBox"]:
                     sensor_instance = SimpleSensor(name)
                     transport, protocol = await loop.create_datagram_endpoint(
                         lambda s=sensor_instance: s,
                         remote_addr=(SERVER_IP, SERVER_PORT)
                     )
-                    sensors[name] = protocol
+                    # Store the actual sensor instance, not the protocol
+                    sensors[name] = sensor_instance
                     transports[name] = transport
                     await asyncio.sleep(0.2)
 
