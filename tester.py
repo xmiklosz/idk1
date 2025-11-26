@@ -130,7 +130,7 @@ class SimpleSensor(asyncio.DatagramProtocol):
         self.uat5_ack_timer = None
         self.uat5_last_msg = None
         self.data_loop_task = None
-        self.last_ack_time = time.time()
+        self.last_comm_time = time.time()
         self.reconnect_task = None
 
     def connection_made(self, transport):
@@ -156,7 +156,7 @@ class SimpleSensor(asyncio.DatagramProtocol):
             # Extract token
             if len(data) >= 9:
                 self.token = struct.unpack('!I', data[5:9])[0]
-                self.last_ack_time = time.time()
+                self.last_comm_time = time.time()
                 if self.data_loop_task is None or self.data_loop_task.done():
                     self.data_loop_task = asyncio.create_task(self.data_loop())
 
@@ -166,28 +166,21 @@ class SimpleSensor(asyncio.DatagramProtocol):
             if ctrl_type == CTRL_DATA_ACK:
                 # SILENT - no print for ACKs during automatic generation
                 self.uat5_waiting_ack = False
-                self.last_ack_time = time.time()
+                self.last_comm_time = time.time()
                 if self.uat5_ack_timer:
                     self.uat5_ack_timer.cancel()
                     self.uat5_ack_timer = None
 
             elif ctrl_type == CTRL_PING:
-                # Update last communication time
-                self.last_ack_time = time.time()
+                self.last_comm_time = time.time()
 
                 if self.uat4_ping_delay > 0:
-                    # UAT4 test mode: ignore first 2 pings
                     print(f"[UAT4] {self.device_name}: Prijatý ping #{3 - self.uat4_ping_delay}, ignorujem...")
                     self.uat4_ping_delay -= 1
                 else:
-                    # Always respond to PINGs (both UAT4 and normal operation)
-                    if not self.uat4_active:
-                        print(f"[UAT4] {self.device_name}: Prijatý ping, odpovedám PONG...")
-
-                    if self.token:
-                        pong = make_pong(self.device_type, self.token)
-                        self.transport.sendto(pong, (SERVER_IP, SERVER_PORT))
-
+                    print(f"[UAT4] {self.device_name}: Prijatý ping, odpovedám PONG...")
+                    pong = make_pong(self.device_type, self.token)
+                    self.transport.sendto(pong, (SERVER_IP, SERVER_PORT))
                     if not self.uat4_active:
                         self.uat4_active = True
                         print(f"[UAT4] {self.device_name}: OBNOVENÉ automatické odosielanie!")
@@ -275,6 +268,26 @@ class SimpleSensor(asyncio.DatagramProtocol):
             self.transport.sendto(self.uat5_last_msg, (SERVER_IP, SERVER_PORT))
             self.uat5_ack_timer = asyncio.create_task(self.uat5_wait_for_ack())
 
+    async def reconnect_watchdog(self):
+        """Monitor connection health and attempt re-registration if needed"""
+        await asyncio.sleep(10)  # Wait before starting monitoring
+
+        while self.running:
+            await asyncio.sleep(10)
+
+            if not self.transport or self.transport.is_closing():
+                break
+
+            # Check if we haven't received any response in 60 seconds
+            time_since_last_comm = time.time() - self.last_comm_time
+
+            # If we haven't heard from server in 60 seconds and we're registered
+            if time_since_last_comm > 60 and self.token:
+                # Try to re-register
+                msg = make_register(self.device_type)
+                self.transport.sendto(msg, (SERVER_IP, SERVER_PORT))
+                self.last_comm_time = time.time()  # Reset to avoid spam
+
     def uat2_send_manual_data(self, data, battery_low):
         if not self.token:
             print(f"CHYBA: {self.device_name} nie je zaregistrovaný!")
@@ -300,26 +313,6 @@ class SimpleSensor(asyncio.DatagramProtocol):
         self.uat4_active = False
         self.uat4_ping_delay = 2
         print(f"{self.device_name} zastavený (ignoruje 2 pingy, odpovie na 3.)")
-
-    async def reconnect_watchdog(self):
-        """Monitor connection health and attempt re-registration if needed"""
-        await asyncio.sleep(5)  # Wait before starting monitoring
-
-        while self.running:
-            await asyncio.sleep(5)
-
-            if not self.transport or self.transport.is_closing():
-                break
-
-            # Check if we haven't received any response in 60 seconds
-            time_since_last_ack = time.time() - self.last_ack_time
-
-            # If we haven't heard from server in 60 seconds and we're registered
-            if time_since_last_ack > 60 and self.token:
-                # Try to re-register
-                msg = make_register(self.device_type)
-                self.transport.sendto(msg, (SERVER_IP, SERVER_PORT))
-                self.last_ack_time = time.time()  # Reset to avoid spam
 
     def stop(self):
         self.running = False
