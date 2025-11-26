@@ -339,6 +339,7 @@ def show_menu():
     print("5) Zaviesť chybu do dát")
     print("6) Simulovať výpadok")
     print("7) Ukončiť")
+    print("8) Manuálne znova zaregistrovať senzory")
 
 
 async def main():
@@ -370,14 +371,21 @@ async def main():
             else:
                 print(f"\n→ Pripájam sa na server {SERVER_IP}:{SERVER_PORT}...")
 
-                # Create each sensor instance directly and store it
+                # Create factory function for each sensor
+                def make_sensor_factory(device_name):
+                    """Create a factory function that returns a new sensor instance"""
+                    sensor = SimpleSensor(device_name)
+                    def factory():
+                        return sensor
+                    return factory, sensor
+
+                # Create each sensor with its own factory
                 for name in ["ThermoNode", "WindSense", "RainDetect", "AirQualityBox"]:
-                    sensor_instance = SimpleSensor(name)
+                    factory, sensor_instance = make_sensor_factory(name)
                     transport, protocol = await loop.create_datagram_endpoint(
-                        lambda s=sensor_instance: s,
+                        factory,
                         remote_addr=(SERVER_IP, SERVER_PORT)
                     )
-                    # Store the actual sensor instance, not the protocol
                     sensors[name] = sensor_instance
                     transports[name] = transport
                     await asyncio.sleep(0.2)
@@ -395,7 +403,7 @@ async def main():
                     print("Použite voľbu 3 na zastavenie alebo 4-6 pre UAT testy")
                 else:
                     print(f"Registrácia problematická: {registered_count}/4 senzorov, {active_tasks}/4 taskov")
-                    print("Skúste zastaviť (3) a spustiť znova (2)")
+                    print("Skúste použiť voľbu 8 pre manuálnu registráciu alebo zastaviť (3) a spustiť znova (2)")
 
         elif choice == "3":
             if sensors:
@@ -579,6 +587,50 @@ async def main():
             for transport in transports.values():
                 transport.close()
             break
+
+        elif choice == "8":
+            if not sensors:
+                print("Žiadne senzory nebežia! Najprv spustite voľbu 2")
+            else:
+                print("→ Manuálne zaregistrujeme všetky senzory znova...")
+
+                # Re-register all sensors
+                for name, sensor in sensors.items():
+                    if sensor.transport and not sensor.transport.is_closing():
+                        # Send REGISTER message
+                        msg = make_register(sensor.device_type)
+                        sensor.transport.sendto(msg, (SERVER_IP, SERVER_PORT))
+                        # Reset token to force re-registration
+                        sensor.token = None
+                        sensor.last_comm_time = time.time()
+                        print(f"  Poslaná registrácia pre {name}")
+
+                # Wait for registration
+                print("Čakám na odpovede...")
+                await asyncio.sleep(2)
+
+                # Check registration status
+                registered_count = sum(1 for s in sensors.values() if s.token is not None)
+                active_tasks = sum(1 for s in sensors.values() if s.data_loop_task and not s.data_loop_task.done())
+
+                if registered_count == 4:
+                    print(f"✓ Úspešne zaregistrované: {registered_count}/4 senzorov")
+                    print(f"✓ Aktívne data_loop tasky: {active_tasks}/4")
+
+                    # Restart data loops for sensors that don't have them running
+                    for name, sensor in sensors.items():
+                        if sensor.token and (sensor.data_loop_task is None or sensor.data_loop_task.done()):
+                            sensor.data_loop_task = asyncio.create_task(sensor.data_loop())
+                            print(f"  Reštartovaný data_loop pre {name}")
+
+                    print("Všetky senzory opäť funkčné!")
+                else:
+                    print(f"⚠ Registrácia čiastočne úspešná: {registered_count}/4 senzorov")
+                    for name, sensor in sensors.items():
+                        if sensor.token:
+                            print(f"  ✓ {name}: Zaregistrovaný")
+                        else:
+                            print(f"  ✗ {name}: Nie je zaregistrovaný")
 
         else:
             if choice.strip():
