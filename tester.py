@@ -592,45 +592,65 @@ async def main():
             if not sensors:
                 print("Žiadne senzory nebežia! Najprv spustite voľbu 2")
             else:
-                print("→ Manuálne zaregistrujeme všetky senzory znova...")
+                print("→ Reštartujem všetky senzory s čerstvými pripojeniami...")
 
-                # Re-register all sensors
-                for name, sensor in sensors.items():
-                    if sensor.transport and not sensor.transport.is_closing():
-                        # Send REGISTER message
-                        msg = make_register(sensor.device_type)
-                        sensor.transport.sendto(msg, (SERVER_IP, SERVER_PORT))
-                        # Reset token to force re-registration
-                        sensor.token = None
-                        sensor.last_comm_time = time.time()
-                        print(f"  Poslaná registrácia pre {name}")
+                # Stop all old sensors
+                for sensor in sensors.values():
+                    sensor.stop()
+
+                await asyncio.sleep(0.3)
+
+                # Close all old transports
+                for transport in transports.values():
+                    if not transport.is_closing():
+                        transport.close()
+
+                await asyncio.sleep(0.3)
+
+                # Clear everything
+                sensors.clear()
+                transports.clear()
+
+                print("  Staré pripojenia zatvorené")
+                print(f"  Vytváram nové pripojenia na {SERVER_IP}:{SERVER_PORT}...")
+
+                # Create factory function for each sensor
+                def make_sensor_factory(device_name):
+                    """Create a factory function that returns a new sensor instance"""
+                    sensor = SimpleSensor(device_name)
+                    def factory():
+                        return sensor
+                    return factory, sensor
+
+                # Recreate all sensors with fresh transports
+                for name in ["ThermoNode", "WindSense", "RainDetect", "AirQualityBox"]:
+                    factory, sensor_instance = make_sensor_factory(name)
+                    transport, protocol = await loop.create_datagram_endpoint(
+                        factory,
+                        remote_addr=(SERVER_IP, SERVER_PORT)
+                    )
+                    sensors[name] = sensor_instance
+                    transports[name] = transport
+                    await asyncio.sleep(0.2)
 
                 # Wait for registration
-                print("Čakám na odpovede...")
+                print("  Čakám na registráciu...")
                 await asyncio.sleep(2)
 
                 # Check registration status
                 registered_count = sum(1 for s in sensors.values() if s.token is not None)
                 active_tasks = sum(1 for s in sensors.values() if s.data_loop_task and not s.data_loop_task.done())
 
-                if registered_count == 4:
-                    print(f"✓ Úspešne zaregistrované: {registered_count}/4 senzorov")
-                    print(f"✓ Aktívne data_loop tasky: {active_tasks}/4")
-
-                    # Restart data loops for sensors that don't have them running
-                    for name, sensor in sensors.items():
-                        if sensor.token and (sensor.data_loop_task is None or sensor.data_loop_task.done()):
-                            sensor.data_loop_task = asyncio.create_task(sensor.data_loop())
-                            print(f"  Reštartovaný data_loop pre {name}")
-
+                if registered_count == 4 and active_tasks == 4:
+                    print(f"✓ Úspešne: {registered_count}/4 senzorov zaregistrovaných, {active_tasks}/4 taskov aktívnych")
                     print("Všetky senzory opäť funkčné!")
                 else:
-                    print(f"⚠ Registrácia čiastočne úspešná: {registered_count}/4 senzorov")
+                    print(f"⚠ Problém: {registered_count}/4 senzorov, {active_tasks}/4 taskov")
                     for name, sensor in sensors.items():
-                        if sensor.token:
-                            print(f"  ✓ {name}: Zaregistrovaný")
+                        if sensor.token and sensor.data_loop_task and not sensor.data_loop_task.done():
+                            print(f"  ✓ {name}: OK")
                         else:
-                            print(f"  ✗ {name}: Nie je zaregistrovaný")
+                            print(f"  ✗ {name}: CHYBA")
 
         else:
             if choice.strip():
